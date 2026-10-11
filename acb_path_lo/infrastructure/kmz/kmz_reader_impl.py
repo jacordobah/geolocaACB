@@ -5,9 +5,7 @@ import xml.etree.ElementTree as ET
 from ...domain.model.route import Route
 from ...domain.model.meeting_point import MeetingPoint
 
-
 NS = {"kml": "http://www.opengis.net/kml/2.2"}
-
 
 def read_coordinates(element) -> list[tuple[float, float]]:
     text = element.findtext("kml:coordinates", namespaces=NS)
@@ -35,7 +33,6 @@ def read_coordinates(element) -> list[tuple[float, float]]:
         coordinates.append((longitude, latitude))
 
     return coordinates
-
 
 class KmzReaderImpl:
 

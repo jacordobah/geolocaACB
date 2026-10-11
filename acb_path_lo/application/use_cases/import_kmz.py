@@ -3,7 +3,6 @@ from uuid import uuid4
 from ..ports.kmz_reader import KmzReader
 from ...domain.repositories.map_repository import MapRepository
 
-
 class ImportKmz:
 
     def __init__(

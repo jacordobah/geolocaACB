@@ -9,7 +9,6 @@ from ...domain.model.route import Route
 
 logger = logging.getLogger(__name__)
 
-
 class MongoMapRepository:
     def __init__(self, database: Database):
         self.routes = database["routes"]
