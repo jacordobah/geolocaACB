@@ -1,0 +1,41 @@
+services:
+  acb_mongo_db:
+    image: mongo:8.0
+    ports:
+      - "127.0.0.1:27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  acb_path_lo:
+    build:
+      context: ./acb_path_lo
+      dockerfile: Dockerfile
+    environment:
+      MONGO_URI: mongodb://acb_mongo_db:27017
+      MONGO_DATABASE: geolocaacb
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      acb_mongo_db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/openapi.json')",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  mongo_data:
