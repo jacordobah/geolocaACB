@@ -36,6 +36,16 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+    networks:
+      default: {}
+      acb-net:
+        aliases:
+          - geoloca-api
 
 volumes:
   mongo_data:
+
+networks:
+  acb-net:
+    external: true
+    name: acb-net
