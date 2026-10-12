@@ -87,8 +87,9 @@ def make_kmz() -> bytes:
 
 class ImportPipelineTests(unittest.IsolatedAsyncioTestCase):
     def test_kmz_upload_route_is_registered(self):
-        route_paths = {route.path for route in app.routes}
-        self.assertIn("/api/v1/imports/kmz", route_paths)
+        paths = app.openapi()["paths"]
+        self.assertIn("/api/v1/imports/kmz", paths)
+        self.assertIn("post", paths["/api/v1/imports/kmz"])
 
     async def test_import_saves_every_route_and_meeting_point(self):
         database = FakeDatabase()
