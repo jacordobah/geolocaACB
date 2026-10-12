@@ -95,10 +95,12 @@ class MongoMapRepository:
         if result.matched_count != 1:
             raise AssociationConflict("Route changed or already has a different association")
 
-    def __init__(self, database: Database):
+    def __init__(self, database: Database, *, ensure_indexes: bool = True):
         self.routes = database["routes"]
         self.meeting_points = database["meeting_points"]
 
+        if not ensure_indexes:
+            return
         self.routes.create_index("import_id")
         self.routes.create_index([("geometry", "2dsphere")])
         self.meeting_points.create_index("import_id")

@@ -9,6 +9,17 @@ from ...application.use_cases.list_meeting_points import ListMeetingPoints
 from ...application.use_cases.list_routes import ListRoutes
 from ...application.use_cases.save_route_status import SaveRouteStatus
 from ..kmz.kmz_reader_impl import KmzReaderImpl
+from ...application.use_cases.get_tracking_session import GetTrackingSession
+from ...application.use_cases.receive_gps_observation import ReceiveGpsObservation
+from ..security.tracking_credentials import verify_credential
+
+
+def get_tracking_session(request: Request) -> GetTrackingSession:
+    return GetTrackingSession(request.app.state.tracking_repository, verify_credential)
+
+
+def get_receive_gps_observation(request: Request) -> ReceiveGpsObservation:
+    return ReceiveGpsObservation(get_tracking_session(request), lambda: datetime.now(UTC))
 
 
 def get_first_meeting_point(request: Request) -> GetFirstMeetingPoint:

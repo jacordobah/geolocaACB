@@ -14,6 +14,8 @@ from .infrastructure.persistence.mongo_route_status_repository import (
     MongoRouteStatusRepository,
 )
 from .infrastructure.config.geofence import load_geofence_policy
+from .infrastructure.api.routes.tracking import router as tracking_router
+from .infrastructure.persistence.mongo_tracking_repository import MongoTrackingRepository
 
 
 @asynccontextmanager
@@ -31,6 +33,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         app.state.route_status_repository = MongoRouteStatusRepository(
             client[os.getenv("MONGO_DATABASE", "geolocaacb")]
         )
+        app.state.tracking_repository = MongoTrackingRepository(
+            client[os.getenv("MONGO_DATABASE", "geolocaacb")]
+        )
         yield
     finally:
         client.close()
@@ -42,3 +47,4 @@ app.include_router(router, prefix="/api/v1")
 app.include_router(maps_router, prefix="/api/v1")
 app.include_router(status_router, prefix="/api/v1")
 app.include_router(routes_router, prefix="/api/v1")
+app.include_router(tracking_router, prefix="/api/v1")
