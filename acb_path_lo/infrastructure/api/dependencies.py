@@ -1,8 +1,13 @@
 from fastapi import Request
 
 from ...application.use_cases.import_kmz import ImportKmz
+from ...application.use_cases.get_first_meeting_point import GetFirstMeetingPoint
 from ...application.use_cases.save_route_status import SaveRouteStatus
 from ..kmz.kmz_reader_impl import KmzReaderImpl
+
+
+def get_first_meeting_point(request: Request) -> GetFirstMeetingPoint:
+    return GetFirstMeetingPoint(request.app.state.map_repository)
 
 def get_import_kmz(request: Request) -> ImportKmz:
     return ImportKmz(
