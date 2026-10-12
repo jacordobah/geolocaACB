@@ -10,3 +10,15 @@ class MapRepository(Protocol):
         points: list[MeetingPoint],
     ) -> None:
         ...
+
+    async def list_routes(
+        self,
+        import_id: str | None = None,
+    ) -> list[dict]:
+        ...
+
+    async def list_meeting_points(
+        self,
+        import_id: str | None = None,
+    ) -> list[dict]:
+        ...

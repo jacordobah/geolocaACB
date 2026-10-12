@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from pymongo import MongoClient
 
 from .infrastructure.api.routes.imports import router
+from .infrastructure.api.routes.maps import router as maps_router
 from .infrastructure.api.routes.status import router as status_router
 from .infrastructure.persistence.mongo_map_repository import MongoMapRepository
 from .infrastructure.persistence.mongo_route_status_repository import (
@@ -35,4 +36,5 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 app = FastAPI(title="Geographic Routes API", lifespan=lifespan)
 
 app.include_router(router, prefix="/api/v1")
+app.include_router(maps_router, prefix="/api/v1")
 app.include_router(status_router, prefix="/api/v1")
