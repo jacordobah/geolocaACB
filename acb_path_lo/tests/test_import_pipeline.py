@@ -28,6 +28,18 @@ class FakeCollection:
             if document["import_id"] != query["import_id"]
         ]
 
+    def find(self, query):
+        if not query:
+            return list(self.documents)
+        return [
+            document
+            for document in self.documents
+            if all(
+                document.get(key) == value
+                for key, value in query.items()
+            )
+        ]
+
 
 class FakeDatabase:
     def __init__(self):
@@ -113,6 +125,24 @@ class ImportPipelineTests(unittest.IsolatedAsyncioTestCase):
                 for document in routes + points
             )
         )
+
+    async def test_list_routes_and_meeting_points(self):
+        database = FakeDatabase()
+        repository = MongoMapRepository(database)
+        await ImportKmz(KmzReaderImpl(), repository).execute(make_kmz())
+
+        routes = await repository.list_routes()
+        points = await repository.list_meeting_points()
+
+        self.assertEqual(len(routes), 2)
+        self.assertEqual(len(points), 1)
+        self.assertEqual(routes[0]["name"], "Ruta norte")
+        self.assertEqual(points[0]["name"], "Punto de encuentro")
+
+        import_id = routes[0]["import_id"]
+        self.assertEqual(len(await repository.list_routes(import_id)), 2)
+        self.assertEqual(len(await repository.list_meeting_points(import_id)), 1)
+        self.assertEqual(len(await repository.list_routes("missing")), 0)
 
 
 if __name__ == "__main__":

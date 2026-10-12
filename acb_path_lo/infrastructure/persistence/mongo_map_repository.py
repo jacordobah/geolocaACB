@@ -144,6 +144,40 @@ class MongoMapRepository:
             point_documents,
         )
 
+    async def list_routes(self, import_id: str | None = None) -> list[dict]:
+        return await asyncio.to_thread(
+            self._list_documents,
+            self.routes,
+            import_id,
+        )
+
+    async def list_meeting_points(
+        self, import_id: str | None = None
+    ) -> list[dict]:
+        return await asyncio.to_thread(
+            self._list_documents,
+            self.meeting_points,
+            import_id,
+        )
+
+    @classmethod
+    def _list_documents(
+        cls,
+        collection,
+        import_id: str | None,
+    ) -> list[dict]:
+        query = {"import_id": import_id} if import_id else {}
+        return [cls._serialize(document) for document in collection.find(query)]
+
+    @staticmethod
+    def _serialize(document: dict) -> dict:
+        serialized = dict(document)
+        if "_id" in serialized:
+            serialized["_id"] = str(serialized["_id"])
+        if isinstance(serialized.get("first_meeting_point_id"), ObjectId):
+            serialized["first_meeting_point_id"] = str(serialized["first_meeting_point_id"])
+        return serialized
+
     def _save_documents(
         self,
         import_id: str,
