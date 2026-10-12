@@ -13,10 +13,12 @@ from .infrastructure.persistence.mongo_map_repository import MongoMapRepository
 from .infrastructure.persistence.mongo_route_status_repository import (
     MongoRouteStatusRepository,
 )
+from .infrastructure.config.geofence import load_geofence_policy
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    app.state.geofence_policy = load_geofence_policy()
     client = MongoClient(
         os.getenv("MONGO_URI", "mongodb://localhost:27017"),
         serverSelectionTimeoutMS=5000,
