@@ -67,6 +67,13 @@ class LastObservation:
 
 
 @dataclass(frozen=True)
+class SessionIssuance:
+    key_hash: str
+    request_hash: str
+    nonce: str
+
+
+@dataclass(frozen=True)
 class TrackingSession:
     tracking_id: str
     guide_id: str
@@ -82,6 +89,7 @@ class TrackingSession:
     first_arrival: FirstArrival | None = None
     history_policy: HistoryPolicy | None = None
     pending_position: GpsPosition | None = None
+    issuance: SessionIssuance | None = None
 
 
 @dataclass(frozen=True)

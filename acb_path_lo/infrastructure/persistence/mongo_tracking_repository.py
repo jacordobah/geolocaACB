@@ -10,7 +10,7 @@ from ...domain.model.first_meeting_point import FirstMeetingPoint
 from ...domain.model.gps_position import GpsPosition, HistoryPolicy
 from ...domain.model.geographic_validation import MeasurementQuality
 from ...domain.model.tracking_session import (
-    FirstArrival, LastObservation, ObservationResult, TrackingPolicy, TrackingSession,
+    FirstArrival, LastObservation, ObservationResult, SessionIssuance, TrackingPolicy, TrackingSession,
 )
 from ...domain.tracking_errors import TrackingError, TrackingStoreUnavailable
 
@@ -24,6 +24,8 @@ def decode_session(document):
         values["history_policy"] = HistoryPolicy(**values["history_policy"])
     if values.get("pending_position"):
         values["pending_position"] = GpsPosition(**values["pending_position"])
+    if values.get("issuance"):
+        values["issuance"] = SessionIssuance(**values["issuance"])
     if values["first_arrival"]:
         values["first_arrival"] = FirstArrival(**values["first_arrival"])
     if values["last_observation"]:
@@ -66,6 +68,20 @@ class MongoTrackingRepository:
             return decode_session(document)
         except (KeyError, TypeError, ValueError) as error:
             raise TrackingStoreUnavailable() from error
+
+    async def get_by_issuance_key(self, key_hash):
+        document = await self._run(self.collection.find_one, {"issuance.key_hash": key_hash})
+        if document is None:
+            return None
+        try:
+            return decode_session(document)
+        except (KeyError, TypeError, ValueError) as error:
+            raise TrackingStoreUnavailable() from error
+
+    async def ensure_issuance_index(self):
+        await self._run(self.collection.create_index, "issuance.key_hash", unique=True,
+                        partialFilterExpression={"issuance.key_hash": {"$type": "string"}},
+                        name="unique_issuance_key")
 
     async def accept(self, session, observation, arrival):
         query = {"_id": session.tracking_id, "version": session.version,
