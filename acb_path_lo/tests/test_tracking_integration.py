@@ -21,14 +21,18 @@ from bson import ObjectId, json_util
 from pymongo import MongoClient
 
 from acb_path_lo.application.use_cases.disable_tracking import DisableTracking
+from acb_path_lo.application.use_cases.enable_tracking import EnableTracking
+from acb_path_lo.application.use_cases.get_first_meeting_point import GetFirstMeetingPoint
 from acb_path_lo.application.use_cases.get_tracking_session import GetTrackingSession
 from acb_path_lo.application.use_cases.receive_gps_observation import ReceiveGpsObservation
 from acb_path_lo.domain.model.coordinates import Coordinates
 from acb_path_lo.domain.model.gps_observation import GpsObservation, utc_milliseconds
 from acb_path_lo.domain.tracking_errors import TrackingError, TrackingStoreUnavailable
 from acb_path_lo.infrastructure.persistence.mongo_tracking_repository import MongoTrackingRepository
+from acb_path_lo.infrastructure.persistence.mongo_map_repository import MongoMapRepository
+from acb_path_lo.infrastructure.config.tracking import load_tracking_policy
+from acb_path_lo.infrastructure.security.tracking_credentials import create_tracking_credentials
 from acb_path_lo.infrastructure.security.tracking_credentials import verify_credential
-from acb_path_lo.infrastructure.tools.configure_tracking import run as control
 
 
 @unittest.skipUnless(os.getenv('ACB_PHASE3_INTEGRATION') == '1', 'Requires explicitly isolated MongoDB')
@@ -103,10 +107,14 @@ class TrackingIntegrationTests(unittest.TestCase):
         print('PHASE3_SESSIONS_RETAINED_DISABLED', json.dumps(cls.sessions))
 
     def create_session(self):
-        result = asyncio.run(control(SimpleNamespace(action='enable', guide_id='phase3-synthetic-guide',
-                                  route_id=self.route_id), self.database))
-        self.sessions.append(result['tracking_id'])
-        return result['tracking_id'], result['credential']
+        identifier, credential, fingerprint = create_tracking_credentials()
+        use_case = EnableTracking(self.repository,
+            GetFirstMeetingPoint(MongoMapRepository(self.database, ensure_indexes=False)),
+            load_tracking_policy(), lambda: datetime.now(UTC))
+        asyncio.run(use_case.execute(identifier, 'phase3-synthetic-guide',
+                                     self.route_id, fingerprint))
+        self.sessions.append(identifier)
+        return identifier, credential
 
     def payload(self, sequence=1, offset=0, accuracy=5):
         longitude, latitude = self.point['location']['coordinates']

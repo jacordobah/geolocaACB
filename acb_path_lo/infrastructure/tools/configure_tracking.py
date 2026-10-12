@@ -14,8 +14,11 @@ from ...application.use_cases.get_first_meeting_point import GetFirstMeetingPoin
 from ...domain.model.tracking_session import TrackingView
 from ...domain.tracking_errors import TrackingError
 from ..config.tracking import load_tracking_policy
+from ..config.history import load_history_policy
 from ..persistence.mongo_map_repository import MongoMapRepository
 from ..persistence.mongo_tracking_repository import MongoTrackingRepository
+from ..persistence.mongo_position_repository import MongoPositionRepository
+from ...application.use_cases.repair_pending_position import RepairPendingPosition
 from ..security.tracking_credentials import create_tracking_credentials
 
 
@@ -26,15 +29,22 @@ async def run(args, database):
         policy = load_tracking_policy()
         if policy is None:
             raise TrackingError("tracking_configuration_unavailable")
+        history = load_history_policy()
+        if history is None:
+            raise TrackingError("tracking_configuration_unavailable")
         tracking_id, credential, fingerprint = create_tracking_credentials()
         maps = MongoMapRepository(database, ensure_indexes=False)
-        session = await EnableTracking(repository, GetFirstMeetingPoint(maps), policy, clock).execute(
+        session = await EnableTracking(repository, GetFirstMeetingPoint(maps), policy,
+                                       clock, history).execute(
             tracking_id, args.guide_id, args.route_id, fingerprint)
         result = asdict(TrackingView.from_session(session))
         result["credential"] = credential  # Shown only on successful creation.
         return result
     if args.action == "disable":
         return asdict(await DisableTracking(repository, clock).execute(args.tracking_id))
+    if args.action == "repair-position":
+        await RepairPendingPosition(repository, MongoPositionRepository(database),
+                                    clock).execute(args.tracking_id)
     session = await repository.get(args.tracking_id)
     if session is None:
         raise TrackingError("tracking_session_unavailable")
@@ -48,7 +58,7 @@ def main():
     enable = actions.add_parser("enable")
     enable.add_argument("--guide-id", required=True)
     enable.add_argument("--route-id", required=True)
-    for action in ("disable", "show"):
+    for action in ("disable", "show", "repair-position"):
         actions.add_parser(action).add_argument("--tracking-id", required=True)
     args = parser.parse_args()
     if (os.getenv("ACB_TEST_PROJECT") != "acb-kmz-test-20261012"

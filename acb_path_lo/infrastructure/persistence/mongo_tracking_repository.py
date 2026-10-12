@@ -7,6 +7,7 @@ from pymongo.errors import DuplicateKeyError, PyMongoError
 from pymongo.write_concern import WriteConcern
 
 from ...domain.model.first_meeting_point import FirstMeetingPoint
+from ...domain.model.gps_position import GpsPosition, HistoryPolicy
 from ...domain.model.geographic_validation import MeasurementQuality
 from ...domain.model.tracking_session import (
     FirstArrival, LastObservation, ObservationResult, TrackingPolicy, TrackingSession,
@@ -19,6 +20,10 @@ def decode_session(document):
     values["tracking_id"] = values.pop("_id")
     values["target"] = FirstMeetingPoint(**values["target"])
     values["policy"] = TrackingPolicy(**values["policy"])
+    if values.get("history_policy"):
+        values["history_policy"] = HistoryPolicy(**values["history_policy"])
+    if values.get("pending_position"):
+        values["pending_position"] = GpsPosition(**values["pending_position"])
     if values["first_arrival"]:
         values["first_arrival"] = FirstArrival(**values["first_arrival"])
     if values["last_observation"]:
@@ -78,4 +83,27 @@ class MongoTrackingRepository:
             {"_id": session.tracking_id, "version": session.version, "state": "enabled"},
             {"$set": {"state": "disabled", "disabled_at": disabled_at},
              "$inc": {"version": 1}}, upsert=False)
+        return result.matched_count == 1
+
+    async def accept_with_pending(self, session, observation, arrival, position):
+        query = {"_id": session.tracking_id, "version": session.version,
+                 "state": "enabled", "pending_position": None}
+        changes = {"last_observation": asdict(observation),
+                   "pending_position": asdict(position)}
+        if arrival is not None:
+            query["first_arrival"] = None
+            changes["first_arrival"] = asdict(arrival)
+        result = await self._run(self.collection.update_one, query,
+                                 {"$set": changes, "$inc": {"version": 1}}, upsert=False)
+        return result.matched_count == 1
+
+    async def clear_pending(self, session):
+        pending = session.pending_position
+        if pending is None:
+            return True
+        result = await self._run(self.collection.update_one,
+            {"_id": session.tracking_id, "version": session.version,
+             "pending_position.sequence": pending.sequence,
+             "pending_position.request_hash": pending.request_hash},
+            {"$set": {"pending_position": None}, "$inc": {"version": 1}}, upsert=False)
         return result.matched_count == 1

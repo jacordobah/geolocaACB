@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import Protocol
 
 from ..model.tracking_session import TrackingSession, LastObservation, FirstArrival
+from ..model.gps_position import GpsPosition
 
 
 class TrackingRepository(Protocol):
@@ -10,3 +11,6 @@ class TrackingRepository(Protocol):
     async def accept(self, session: TrackingSession, observation: LastObservation,
                      arrival: FirstArrival | None) -> bool: ...
     async def disable(self, session: TrackingSession, disabled_at: datetime) -> bool: ...
+    async def accept_with_pending(self, session: TrackingSession, observation: LastObservation,
+                                  arrival: FirstArrival | None, position: GpsPosition) -> bool: ...
+    async def clear_pending(self, session: TrackingSession) -> bool: ...

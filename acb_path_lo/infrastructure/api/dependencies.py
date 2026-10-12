@@ -11,6 +11,7 @@ from ...application.use_cases.save_route_status import SaveRouteStatus
 from ..kmz.kmz_reader_impl import KmzReaderImpl
 from ...application.use_cases.get_tracking_session import GetTrackingSession
 from ...application.use_cases.receive_gps_observation import ReceiveGpsObservation
+from ...application.use_cases.list_positions import ListPositions
 from ..security.tracking_credentials import verify_credential
 
 
@@ -19,7 +20,13 @@ def get_tracking_session(request: Request) -> GetTrackingSession:
 
 
 def get_receive_gps_observation(request: Request) -> ReceiveGpsObservation:
-    return ReceiveGpsObservation(get_tracking_session(request), lambda: datetime.now(UTC))
+    return ReceiveGpsObservation(get_tracking_session(request), lambda: datetime.now(UTC),
+                                 getattr(request.app.state, "position_repository", None))
+
+
+def get_list_positions(request: Request) -> ListPositions:
+    return ListPositions(get_tracking_session(request), request.app.state.position_repository,
+                         lambda: datetime.now(UTC))
 
 
 def get_first_meeting_point(request: Request) -> GetFirstMeetingPoint:

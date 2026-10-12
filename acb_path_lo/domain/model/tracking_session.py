@@ -5,6 +5,7 @@ from typing import Literal
 from .coordinates import finite_number
 from .first_meeting_point import FirstMeetingPoint
 from .geographic_validation import GeofencePolicy, MeasurementQuality
+from .gps_position import GpsPosition, HistoryPolicy
 
 
 @dataclass(frozen=True)
@@ -79,6 +80,8 @@ class TrackingSession:
     version: int = 0
     last_observation: LastObservation | None = None
     first_arrival: FirstArrival | None = None
+    history_policy: HistoryPolicy | None = None
+    pending_position: GpsPosition | None = None
 
 
 @dataclass(frozen=True)
