@@ -14,6 +14,7 @@ from ...domain.model.first_meeting_point import FirstMeetingPoint
 from ...domain.model.route_endpoints import (
     EndpointMatch, RouteEndpoints, RouteEndpointPoint, RouteEndpointsView,
 )
+from ...domain.model.route_meeting_points import RouteMeetingPoints
 from ...domain.errors import (
     AssociationConflict, FirstMeetingPointNotConfigured, InvalidGeographicData,
     InvalidIdentifier, MeetingPointNotFound, RouteEndpointsNotConfigured,
@@ -124,6 +125,40 @@ class MongoMapRepository:
             end=resolved.get("end"),
         )
 
+    async def get_route(self, route_id: str) -> dict:
+        return await asyncio.to_thread(self._get_route, route_id)
+
+    def _get_route(self, route_id: str) -> dict:
+        identifier = self._object_id(route_id)
+        route = self.routes.find_one({"_id": identifier})
+        if route is None:
+            raise RouteNotFound("Geographic route not found")
+        references = route.get("meeting_point_ids", [])
+        if references is None:
+            references = []
+        if not isinstance(references, (list, tuple)):
+            raise InvalidGeographicData("Invalid meeting point references")
+        if any(not isinstance(reference, ObjectId) for reference in references):
+            raise InvalidGeographicData("Invalid meeting point references")
+
+        points = []
+        if references:
+            documents = self.meeting_points.find({"_id": {"$in": list(references)}})
+            by_id = {document.get("_id"): document for document in documents}
+            for reference in references:
+                point = by_id.get(reference)
+                if point is None:
+                    raise MeetingPointNotFound("Referenced meeting point not found")
+                if not route.get("import_id") or point.get("import_id") != route["import_id"]:
+                    raise AssociationConflict("Route and point belong to different imports")
+                self._point_data(point)
+                points.append(self._serialize(point))
+
+        result = self._serialize(route)
+        result.pop("meeting_point_ids", None)
+        result["meeting_points"] = points
+        return result
+
     async def set_first_meeting_point(self, route_id: str, point_id: str) -> None:
         await asyncio.to_thread(self._set_first_meeting_point, route_id, point_id)
 
@@ -158,6 +193,7 @@ class MongoMapRepository:
         if not ensure_indexes:
             return
         self.routes.create_index("import_id")
+        self.routes.create_index("meeting_point_ids")
         self.routes.create_index([("geometry", "2dsphere")])
         self.meeting_points.create_index("import_id")
         self.meeting_points.create_index([("location", "2dsphere")])
@@ -168,6 +204,7 @@ class MongoMapRepository:
         routes: list[Route],
         points: list[MeetingPoint],
         endpoints: list[RouteEndpoints],
+        route_meeting_points: list[RouteMeetingPoints],
     ) -> None:
         if len(endpoints) != len(routes):
             raise ValueError("Endpoint resolution must match the number of routes")
@@ -177,6 +214,15 @@ class MongoMapRepository:
         ):
             raise ValueError(
                 "Endpoint resolution must follow the order of the routes"
+            )
+        if len(route_meeting_points) != len(routes):
+            raise ValueError("Meeting point resolution must match the number of routes")
+        if any(
+            resolved.route_index != index
+            for index, resolved in enumerate(route_meeting_points)
+        ):
+            raise ValueError(
+                "Meeting point resolution must follow the order of the routes"
             )
         point_documents = [
             {
@@ -194,7 +240,9 @@ class MongoMapRepository:
             for point in points
         ]
         route_documents = []
-        for route, resolved in zip(routes, endpoints):
+        for route, resolved, resolved_points in zip(
+            routes, endpoints, route_meeting_points
+        ):
             document = {
                 "import_id": import_id,
                 "name": route.name,
@@ -208,6 +256,9 @@ class MongoMapRepository:
                         for longitude, latitude in route.coordinates
                     ],
                 },
+                "meeting_point_ids": self._meeting_point_documents(
+                    resolved_points, point_documents,
+                ),
             }
             if resolved.reason is not None:
                 document["endpoint_reason"] = resolved.reason
@@ -239,6 +290,20 @@ class MongoMapRepository:
             route_documents,
             point_documents,
         )
+
+    @staticmethod
+    def _meeting_point_documents(
+        resolved: RouteMeetingPoints, point_documents: list[dict],
+    ) -> list[ObjectId]:
+        references = []
+        for index in resolved.point_indices:
+            if not 0 <= index < len(point_documents):
+                raise ValueError("Meeting point index is out of range")
+            document = point_documents[index]
+            if document["kind"] != "meeting_point":
+                raise ValueError("Resolved point is not a meeting point")
+            references.append(document["_id"])
+        return references
 
     @staticmethod
     def _endpoint_document(
@@ -294,6 +359,12 @@ class MongoMapRepository:
         ):
             if isinstance(serialized.get(key), ObjectId):
                 serialized[key] = str(serialized[key])
+        references = serialized.get("meeting_point_ids")
+        if isinstance(references, (list, tuple)):
+            serialized["meeting_point_ids"] = [
+                str(reference) if isinstance(reference, ObjectId) else reference
+                for reference in references
+            ]
         return serialized
 
     def _save_documents(

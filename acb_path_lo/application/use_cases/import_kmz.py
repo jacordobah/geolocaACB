@@ -5,6 +5,7 @@ from ...domain.model.endpoint_policy import EndpointPolicy
 from ...domain.model.point_kind import STORED_POINT_KINDS
 from ...domain.repositories.map_repository import MapRepository
 from ...domain.services.route_endpoints import resolve_route_endpoints
+from ...domain.services.route_meeting_points import resolve_route_meeting_points
 
 
 class ImportKmz:
@@ -36,12 +37,14 @@ class ImportKmz:
             pe_tolerance_m=self.endpoint_policy.pe_tolerance_m,
             school_tolerance_m=self.endpoint_policy.school_tolerance_m,
         )
+        route_meeting_points = resolve_route_meeting_points(routes, points, endpoints)
 
         await self.repository.save_import(
             import_id,
             routes,
             points,
             endpoints,
+            route_meeting_points,
         )
 
         return {

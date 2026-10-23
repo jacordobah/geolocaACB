@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pymongo.errors import PyMongoError
 
 from ....application.use_cases.get_first_meeting_point import GetFirstMeetingPoint
+from ....application.use_cases.get_route import GetRoute
 from ....application.use_cases.get_route_endpoints import GetRouteEndpoints
 from ....application.use_cases.validate_first_meeting_point import ValidateFirstMeetingPoint
 from ....domain.errors import (
@@ -18,7 +19,8 @@ from ....domain.model.route_endpoints import RouteEndpointsView
 from ..schemas.geographic_validation import ValidateLocationRequest
 from ..validation import JsonSafeValidationRoute
 from ..dependencies import (
-    get_first_meeting_point, get_route_endpoints, get_validate_first_meeting_point,
+    get_first_meeting_point, get_route, get_route_endpoints,
+    get_validate_first_meeting_point,
 )
 
 logger = logging.getLogger(__name__)
@@ -40,6 +42,18 @@ def geographic_http_error(error: Exception) -> HTTPException:
         return HTTPException(409, detail={"code": "invalid_geographic_association"})
     logger.error("Could not retrieve geographic data", exc_info=True)
     return HTTPException(503, detail={"code": "geographic_store_unavailable"})
+
+
+@router.get("/{route_id}")
+async def route_detail(
+    route_id: str,
+    use_case: GetRoute = Depends(get_route),
+):
+    try:
+        return await use_case.execute(route_id)
+    except (InvalidIdentifier, RouteNotFound, MeetingPointNotFound,
+            AssociationConflict, InvalidGeographicData, PyMongoError) as error:
+        raise geographic_http_error(error) from error
 
 
 @router.get("/{route_id}/first-meeting-point", response_model=FirstMeetingPoint)

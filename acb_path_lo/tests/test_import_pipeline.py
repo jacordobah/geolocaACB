@@ -189,11 +189,14 @@ class ImportPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(routes[0]["start_meeting_point_id"], points[0]["_id"])
         self.assertEqual(routes[0]["end_meeting_point_id"], points[2]["_id"])
         self.assertEqual(routes[0]["first_meeting_point_id"], points[0]["_id"])
+        self.assertEqual(routes[0]["meeting_point_ids"], [points[0]["_id"]])
         self.assertEqual(routes[1]["start_meeting_point_id"], points[2]["_id"])
         self.assertEqual(routes[1]["end_meeting_point_id"], points[1]["_id"])
+        self.assertEqual(routes[1]["meeting_point_ids"], [points[1]["_id"]])
         self.assertNotIn("first_meeting_point_id", routes[1])
         self.assertEqual(routes[2]["endpoint_status"], "not_applicable")
         self.assertNotIn("start_meeting_point_id", routes[2])
+        self.assertEqual(routes[2]["meeting_point_ids"], [])
         self.assertTrue(
             all(
                 document["import_id"] == result["import_id"]
@@ -224,7 +227,7 @@ class ImportPipelineTests(unittest.IsolatedAsyncioTestCase):
         ]
 
         with self.assertRaises(ValueError):
-            await repository.save_import("test-import", [route], [], endpoints)
+            await repository.save_import("test-import", [route], [], endpoints, [])
 
         self.assertEqual(database["meeting_points"].documents, [])
         self.assertEqual(database["routes"].documents, [])
@@ -245,7 +248,7 @@ class ImportPipelineTests(unittest.IsolatedAsyncioTestCase):
         ]
 
         with self.assertRaises(ValueError):
-            await repository.save_import("test-import", [route], [], endpoints)
+            await repository.save_import("test-import", [route], [], endpoints, [])
 
         self.assertEqual(database["meeting_points"].documents, [])
         self.assertEqual(database["routes"].documents, [])
@@ -264,6 +267,11 @@ class ImportPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(points[0]["name"], "PE01")
         self.assertIsInstance(routes[0]["start_meeting_point_id"], str)
         self.assertIsInstance(routes[0]["first_meeting_point_id"], str)
+        self.assertIsInstance(routes[0]["meeting_point_ids"], list)
+        self.assertTrue(all(
+            isinstance(reference, str)
+            for reference in routes[0]["meeting_point_ids"]
+        ))
 
         import_id = routes[0]["import_id"]
         self.assertEqual(len(await repository.list_routes(import_id)), 3)

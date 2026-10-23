@@ -80,6 +80,7 @@ class MapListingHttpTests(unittest.IsolatedAsyncioTestCase):
             ('/api/v1/imports/kmz', 'post'),
             ('/api/v1/status/notify', 'post'),
             ('/api/v1/routes', 'get'),
+            ('/api/v1/routes/{route_id}', 'get'),
             ('/api/v1/meeting-points', 'get'),
             ('/api/v1/routes/{route_id}/first-meeting-point', 'get'),
             ('/api/v1/routes/{route_id}/endpoints', 'get'),

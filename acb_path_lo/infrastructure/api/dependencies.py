@@ -5,6 +5,7 @@ from fastapi import HTTPException, Request
 from ...application.use_cases.import_kmz import ImportKmz
 from ...application.use_cases.get_first_meeting_point import GetFirstMeetingPoint
 from ...application.use_cases.get_route_endpoints import GetRouteEndpoints
+from ...application.use_cases.get_route import GetRoute
 from ...application.use_cases.validate_first_meeting_point import ValidateFirstMeetingPoint
 from ...application.use_cases.list_meeting_points import ListMeetingPoints
 from ...application.use_cases.list_routes import ListRoutes
@@ -36,6 +37,10 @@ def get_first_meeting_point(request: Request) -> GetFirstMeetingPoint:
 
 def get_route_endpoints(request: Request) -> GetRouteEndpoints:
     return GetRouteEndpoints(request.app.state.map_repository)
+
+
+def get_route(request: Request) -> GetRoute:
+    return GetRoute(request.app.state.map_repository)
 
 
 def get_validate_first_meeting_point(request: Request) -> ValidateFirstMeetingPoint:

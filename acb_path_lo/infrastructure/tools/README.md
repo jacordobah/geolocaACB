@@ -54,3 +54,25 @@ optativa, solo de lectura, y requiere `ACB_INTEGRATION_URL`,
 `ACB_INTEGRATION_ROUTE_ID`, `ACB_INTEGRATION_POINT_ID`, `MONGO_URI` y
 `MONGO_DATABASE`. Dentro de la API temporal, la URL es `http://localhost:8000`;
 desde Windows es `http://localhost:18000`.
+
+## Backfill de puntos de encuentro por ruta
+
+Las importaciones nuevas guardan `meeting_point_ids` en cada ruta `541` o `542`
+resuelta. Para rutas importadas antes de ese cambio, la herramienta completa
+únicamente las rutas que no tienen el campo. No modifica
+`first_meeting_point_id`, `start_meeting_point_id` ni `end_meeting_point_id`.
+
+Primero se recomienda una ejecución sin escritura:
+
+```powershell
+docker --context desktop-linux exec acb-rf09-phase1-preview python -B -m acb_path_lo.infrastructure.tools.backfill_route_meeting_points --import-id $ImportId --dry-run
+```
+
+Después de revisar el resultado, ejecutar con `--confirm`. La herramienta usa las
+mismas protecciones de entorno que las demás herramientas locales: exige
+`ACB_TEST_PROJECT=acb-kmz-test-20261012`,
+`MONGO_URI=mongodb://acb_mongo_db:27017` y `MONGO_DATABASE=geolocaacb`.
+
+La asociación se calcula con la variante del PE ya resuelto como extremo
+(`start` para `541`, `end` para `542`) y se ordena por número de PE. Las rutas sin
+un extremo PE o sin variante resoluble se omiten y se reportan en el resumen.
