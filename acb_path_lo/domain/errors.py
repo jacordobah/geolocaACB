@@ -14,6 +14,10 @@ class FirstMeetingPointNotConfigured(GeographicDataError):
     pass
 
 
+class RouteEndpointsNotConfigured(GeographicDataError):
+    pass
+
+
 class MeetingPointNotFound(GeographicDataError):
     pass
 

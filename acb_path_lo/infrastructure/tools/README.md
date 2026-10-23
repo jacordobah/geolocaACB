@@ -1,10 +1,16 @@
 # Configuración local del primer punto de encuentro
 
-La herramienta recibe identificadores verificados por el operador. No deduce
-relaciones por nombres, distancia ni orden. No existe un endpoint HTTP de escritura.
-Los modelos del importador permanecen intactos; solo una ruta configurada incorpora
-`first_meeting_point_id` como ObjectId. Los casos de uso reciben cadenas y devuelven
-un modelo de dominio sin BSON.
+La herramienta recibe identificadores verificados por el operador y no deduce
+relaciones por nombres, distancia ni orden. Desde la importación KMZ, las rutas 541
+resueltas de la rama `RUTAS AL COLEGIO EN BICI` reciben automáticamente
+`start_meeting_point_id` y `first_meeting_point_id`; la herramienta queda para
+verificar o completar asociaciones en rutas no resueltas y para repetir una
+configuración idéntica. No existe un endpoint HTTP de escritura. Los casos de uso
+reciben cadenas y devuelven un modelo de dominio sin BSON.
+
+El importador persiste además `start_meeting_point_id` y `end_meeting_point_id`
+como ObjectId para las rutas resueltas. La herramienta solo modifica
+`first_meeting_point_id`.
 
 Antes de usarla, verificar mediante `docker inspect` que el contenedor pertenece a
 la red `acb-kmz-test-20261012_default` y que MongoDB monta exclusivamente el volumen

@@ -82,5 +82,6 @@ class MapListingHttpTests(unittest.IsolatedAsyncioTestCase):
             ('/api/v1/routes', 'get'),
             ('/api/v1/meeting-points', 'get'),
             ('/api/v1/routes/{route_id}/first-meeting-point', 'get'),
+            ('/api/v1/routes/{route_id}/endpoints', 'get'),
         ]:
             self.assertIn(method, paths[path])

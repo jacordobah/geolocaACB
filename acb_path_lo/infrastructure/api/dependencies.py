@@ -4,6 +4,7 @@ from fastapi import HTTPException, Request
 
 from ...application.use_cases.import_kmz import ImportKmz
 from ...application.use_cases.get_first_meeting_point import GetFirstMeetingPoint
+from ...application.use_cases.get_route_endpoints import GetRouteEndpoints
 from ...application.use_cases.validate_first_meeting_point import ValidateFirstMeetingPoint
 from ...application.use_cases.list_meeting_points import ListMeetingPoints
 from ...application.use_cases.list_routes import ListRoutes
@@ -33,6 +34,10 @@ def get_first_meeting_point(request: Request) -> GetFirstMeetingPoint:
     return GetFirstMeetingPoint(request.app.state.map_repository)
 
 
+def get_route_endpoints(request: Request) -> GetRouteEndpoints:
+    return GetRouteEndpoints(request.app.state.map_repository)
+
+
 def get_validate_first_meeting_point(request: Request) -> ValidateFirstMeetingPoint:
     policy = getattr(request.app.state, "geofence_policy", None)
     if policy is None:
@@ -45,6 +50,7 @@ def get_import_kmz(request: Request) -> ImportKmz:
     return ImportKmz(
         KmzReaderImpl(),
         request.app.state.map_repository,
+        getattr(request.app.state, "endpoint_policy", None),
     )
 
 def get_save_route_status(request: Request) -> SaveRouteStatus:
