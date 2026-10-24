@@ -11,9 +11,14 @@ from pymongo.errors import PyMongoError
 from ...domain.model.meeting_point import MeetingPoint
 from ...domain.model.route import Route
 from ...domain.model.first_meeting_point import FirstMeetingPoint
+from ...domain.model.route_endpoints import (
+    EndpointMatch, RouteEndpoints, RouteEndpointPoint, RouteEndpointsView,
+)
+from ...domain.model.route_meeting_points import RouteMeetingPoints
 from ...domain.errors import (
     AssociationConflict, FirstMeetingPointNotConfigured, InvalidGeographicData,
-    InvalidIdentifier, MeetingPointNotFound, RouteNotFound,
+    InvalidIdentifier, MeetingPointNotFound, RouteEndpointsNotConfigured,
+    RouteNotFound,
 )
 
 logger = logging.getLogger(__name__)
@@ -29,8 +34,10 @@ class MongoMapRepository:
             raise InvalidIdentifier("Invalid geographic identifier") from error
 
     @staticmethod
-    def _point_result(route_id: ObjectId, point: dict) -> FirstMeetingPoint:
-        location = point.get("location", {})
+    def _point_data(point: dict) -> tuple[str, float, float]:
+        location = point.get("location")
+        if not isinstance(location, dict):
+            raise InvalidGeographicData("Invalid meeting point geometry")
         coordinates = location.get("coordinates")
         if (
             location.get("type") != "Point"
@@ -43,9 +50,14 @@ class MongoMapRepository:
             or not isinstance(point.get("name"), str)
         ):
             raise InvalidGeographicData("Invalid meeting point geometry")
+        return point["name"], coordinates[0], coordinates[1]
+
+    @classmethod
+    def _point_result(cls, route_id: ObjectId, point: dict) -> FirstMeetingPoint:
+        name, longitude, latitude = cls._point_data(point)
         return FirstMeetingPoint(
             route_id=str(route_id), meeting_point_id=str(point["_id"]),
-            name=point["name"], longitude=coordinates[0], latitude=coordinates[1],
+            name=name, longitude=longitude, latitude=latitude,
         )
 
     async def get_first_meeting_point(self, route_id: str) -> FirstMeetingPoint:
@@ -68,6 +80,85 @@ class MongoMapRepository:
             raise AssociationConflict("Route and point belong to different imports")
         return self._point_result(identifier, point)
 
+    async def get_route_endpoints(self, route_id: str) -> RouteEndpointsView:
+        return await asyncio.to_thread(self._get_route_endpoints, route_id)
+
+    def _get_route_endpoints(self, route_id: str) -> RouteEndpointsView:
+        identifier = self._object_id(route_id)
+        route = self.routes.find_one({"_id": identifier})
+        if route is None:
+            raise RouteNotFound("Geographic route not found")
+        references = {
+            "start": route.get("start_meeting_point_id"),
+            "end": route.get("end_meeting_point_id"),
+        }
+        if references["start"] is None and references["end"] is None:
+            raise RouteEndpointsNotConfigured("Route endpoints are not configured")
+        metadata = route.get("endpoints")
+        if not isinstance(metadata, dict):
+            metadata = {}
+        resolved = {}
+        for role, reference in references.items():
+            if reference is None:
+                continue
+            if not isinstance(reference, ObjectId):
+                raise InvalidGeographicData("Invalid route endpoint reference")
+            point = self.meeting_points.find_one({"_id": reference})
+            if point is None:
+                raise MeetingPointNotFound("Referenced meeting point not found")
+            if not route.get("import_id") or point.get("import_id") != route["import_id"]:
+                raise AssociationConflict("Route and point belong to different imports")
+            name, longitude, latitude = self._point_data(point)
+            role_metadata = metadata.get(role)
+            if not isinstance(role_metadata, dict):
+                role_metadata = {}
+            resolved[role] = RouteEndpointPoint(
+                meeting_point_id=str(point["_id"]), name=name,
+                longitude=longitude, latitude=latitude,
+                source=role_metadata.get("source"),
+                distance_m=role_metadata.get("distance_m"),
+            )
+        return RouteEndpointsView(
+            route_id=str(identifier),
+            status=route.get("endpoint_status", "resolved"),
+            start=resolved.get("start"),
+            end=resolved.get("end"),
+        )
+
+    async def get_route(self, route_id: str) -> dict:
+        return await asyncio.to_thread(self._get_route, route_id)
+
+    def _get_route(self, route_id: str) -> dict:
+        identifier = self._object_id(route_id)
+        route = self.routes.find_one({"_id": identifier})
+        if route is None:
+            raise RouteNotFound("Geographic route not found")
+        references = route.get("meeting_point_ids", [])
+        if references is None:
+            references = []
+        if not isinstance(references, (list, tuple)):
+            raise InvalidGeographicData("Invalid meeting point references")
+        if any(not isinstance(reference, ObjectId) for reference in references):
+            raise InvalidGeographicData("Invalid meeting point references")
+
+        points = []
+        if references:
+            documents = self.meeting_points.find({"_id": {"$in": list(references)}})
+            by_id = {document.get("_id"): document for document in documents}
+            for reference in references:
+                point = by_id.get(reference)
+                if point is None:
+                    raise MeetingPointNotFound("Referenced meeting point not found")
+                if not route.get("import_id") or point.get("import_id") != route["import_id"]:
+                    raise AssociationConflict("Route and point belong to different imports")
+                self._point_data(point)
+                points.append(self._serialize(point))
+
+        result = self._serialize(route)
+        result.pop("meeting_point_ids", None)
+        result["meeting_points"] = points
+        return result
+
     async def set_first_meeting_point(self, route_id: str, point_id: str) -> None:
         await asyncio.to_thread(self._set_first_meeting_point, route_id, point_id)
 
@@ -81,7 +172,7 @@ class MongoMapRepository:
             raise MeetingPointNotFound("Meeting point not found")
         if not route.get("import_id") or point.get("import_id") != route["import_id"]:
             raise AssociationConflict("Route and point belong to different imports")
-        self._point_result(identifier, point)
+        self._point_data(point)
         # Standalone MongoDB: this CAS is atomic for the route document only.
         # Point existence/import membership was checked above, not transactionally.
         result = self.routes.update_one(
@@ -102,6 +193,7 @@ class MongoMapRepository:
         if not ensure_indexes:
             return
         self.routes.create_index("import_id")
+        self.routes.create_index("meeting_point_ids")
         self.routes.create_index([("geometry", "2dsphere")])
         self.meeting_points.create_index("import_id")
         self.meeting_points.create_index([("location", "2dsphere")])
@@ -111,25 +203,34 @@ class MongoMapRepository:
         import_id: str,
         routes: list[Route],
         points: list[MeetingPoint],
+        endpoints: list[RouteEndpoints],
+        route_meeting_points: list[RouteMeetingPoints],
     ) -> None:
-        route_documents = [
-            {
-                "import_id": import_id,
-                "name": route.name,
-                "geometry": {
-                    "type": "LineString",
-                    "coordinates": [
-                        [longitude, latitude]
-                        for longitude, latitude in route.coordinates
-                    ],
-                },
-            }
-            for route in routes
-        ]
+        if len(endpoints) != len(routes):
+            raise ValueError("Endpoint resolution must match the number of routes")
+        if any(
+            resolved.route_index != index
+            for index, resolved in enumerate(endpoints)
+        ):
+            raise ValueError(
+                "Endpoint resolution must follow the order of the routes"
+            )
+        if len(route_meeting_points) != len(routes):
+            raise ValueError("Meeting point resolution must match the number of routes")
+        if any(
+            resolved.route_index != index
+            for index, resolved in enumerate(route_meeting_points)
+        ):
+            raise ValueError(
+                "Meeting point resolution must follow the order of the routes"
+            )
         point_documents = [
             {
+                "_id": ObjectId(),
                 "import_id": import_id,
                 "name": point.name,
+                "kind": point.kind.value,
+                "folder_path": list(point.folder_path),
                 "description": point.description,
                 "location": {
                     "type": "Point",
@@ -138,6 +239,50 @@ class MongoMapRepository:
             }
             for point in points
         ]
+        route_documents = []
+        for route, resolved, resolved_points in zip(
+            routes, endpoints, route_meeting_points
+        ):
+            document = {
+                "import_id": import_id,
+                "name": route.name,
+                "code": route.code,
+                "folder_path": list(route.folder_path),
+                "endpoint_status": resolved.status,
+                "geometry": {
+                    "type": "LineString",
+                    "coordinates": [
+                        [longitude, latitude]
+                        for longitude, latitude in route.coordinates
+                    ],
+                },
+                "meeting_point_ids": self._meeting_point_documents(
+                    resolved_points, point_documents,
+                ),
+            }
+            if resolved.reason is not None:
+                document["endpoint_reason"] = resolved.reason
+            start_reference, start_metadata = self._endpoint_document(
+                resolved.start, point_documents,
+            )
+            end_reference, end_metadata = self._endpoint_document(
+                resolved.end, point_documents,
+            )
+            if start_reference is not None:
+                document["start_meeting_point_id"] = start_reference
+                if route.code == "541" and resolved.status == "resolved":
+                    document["first_meeting_point_id"] = start_reference
+            if end_reference is not None:
+                document["end_meeting_point_id"] = end_reference
+            if start_metadata is not None or end_metadata is not None:
+                document["endpoints"] = {
+                    role: metadata
+                    for role, metadata in (
+                        ("start", start_metadata), ("end", end_metadata),
+                    )
+                    if metadata is not None
+                }
+            route_documents.append(document)
 
         await asyncio.to_thread(
             self._save_documents,
@@ -145,6 +290,37 @@ class MongoMapRepository:
             route_documents,
             point_documents,
         )
+
+    @staticmethod
+    def _meeting_point_documents(
+        resolved: RouteMeetingPoints, point_documents: list[dict],
+    ) -> list[ObjectId]:
+        references = []
+        for index in resolved.point_indices:
+            if not 0 <= index < len(point_documents):
+                raise ValueError("Meeting point index is out of range")
+            document = point_documents[index]
+            if document["kind"] != "meeting_point":
+                raise ValueError("Resolved point is not a meeting point")
+            references.append(document["_id"])
+        return references
+
+    @staticmethod
+    def _endpoint_document(
+        match: EndpointMatch | None, point_documents: list[dict],
+    ) -> tuple[ObjectId | None, dict | None]:
+        if match is None:
+            return None, None
+        if not 0 <= match.point_index < len(point_documents):
+            raise ValueError("Endpoint point index is out of range")
+        reference = point_documents[match.point_index]["_id"]
+        metadata = {
+            "source": match.source,
+            "distance_m": match.distance_m,
+            "confidence": match.confidence,
+            "matched_vertex_index": match.matched_vertex_index,
+        }
+        return reference, metadata
 
     async def list_routes(self, import_id: str | None = None) -> list[dict]:
         return await asyncio.to_thread(
@@ -176,8 +352,19 @@ class MongoMapRepository:
         serialized = dict(document)
         if "_id" in serialized:
             serialized["_id"] = str(serialized["_id"])
-        if isinstance(serialized.get("first_meeting_point_id"), ObjectId):
-            serialized["first_meeting_point_id"] = str(serialized["first_meeting_point_id"])
+        for key in (
+            "first_meeting_point_id",
+            "start_meeting_point_id",
+            "end_meeting_point_id",
+        ):
+            if isinstance(serialized.get(key), ObjectId):
+                serialized[key] = str(serialized[key])
+        references = serialized.get("meeting_point_ids")
+        if isinstance(references, (list, tuple)):
+            serialized["meeting_point_ids"] = [
+                str(reference) if isinstance(reference, ObjectId) else reference
+                for reference in references
+            ]
         return serialized
 
     def _save_documents(
@@ -187,10 +374,10 @@ class MongoMapRepository:
         point_documents: list[dict],
     ) -> None:
         try:
-            if route_documents:
-                self.routes.insert_many(route_documents)
             if point_documents:
                 self.meeting_points.insert_many(point_documents)
+            if route_documents:
+                self.routes.insert_many(route_documents)
         except PyMongoError:
             for collection in (self.routes, self.meeting_points):
                 try:

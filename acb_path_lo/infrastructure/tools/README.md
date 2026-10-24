@@ -1,10 +1,16 @@
 # Configuración local del primer punto de encuentro
 
-La herramienta recibe identificadores verificados por el operador. No deduce
-relaciones por nombres, distancia ni orden. No existe un endpoint HTTP de escritura.
-Los modelos del importador permanecen intactos; solo una ruta configurada incorpora
-`first_meeting_point_id` como ObjectId. Los casos de uso reciben cadenas y devuelven
-un modelo de dominio sin BSON.
+La herramienta recibe identificadores verificados por el operador y no deduce
+relaciones por nombres, distancia ni orden. Desde la importación KMZ, las rutas 541
+resueltas de la rama `RUTAS AL COLEGIO EN BICI` reciben automáticamente
+`start_meeting_point_id` y `first_meeting_point_id`; la herramienta queda para
+verificar o completar asociaciones en rutas no resueltas y para repetir una
+configuración idéntica. No existe un endpoint HTTP de escritura. Los casos de uso
+reciben cadenas y devuelven un modelo de dominio sin BSON.
+
+El importador persiste además `start_meeting_point_id` y `end_meeting_point_id`
+como ObjectId para las rutas resueltas. La herramienta solo modifica
+`first_meeting_point_id`.
 
 Antes de usarla, verificar mediante `docker inspect` que el contenedor pertenece a
 la red `acb-kmz-test-20261012_default` y que MongoDB monta exclusivamente el volumen
@@ -48,3 +54,25 @@ optativa, solo de lectura, y requiere `ACB_INTEGRATION_URL`,
 `ACB_INTEGRATION_ROUTE_ID`, `ACB_INTEGRATION_POINT_ID`, `MONGO_URI` y
 `MONGO_DATABASE`. Dentro de la API temporal, la URL es `http://localhost:8000`;
 desde Windows es `http://localhost:18000`.
+
+## Backfill de puntos de encuentro por ruta
+
+Las importaciones nuevas guardan `meeting_point_ids` en cada ruta `541` o `542`
+resuelta. Para rutas importadas antes de ese cambio, la herramienta completa
+únicamente las rutas que no tienen el campo. No modifica
+`first_meeting_point_id`, `start_meeting_point_id` ni `end_meeting_point_id`.
+
+Primero se recomienda una ejecución sin escritura:
+
+```powershell
+docker --context desktop-linux exec acb-rf09-phase1-preview python -B -m acb_path_lo.infrastructure.tools.backfill_route_meeting_points --import-id $ImportId --dry-run
+```
+
+Después de revisar el resultado, ejecutar con `--confirm`. La herramienta usa las
+mismas protecciones de entorno que las demás herramientas locales: exige
+`ACB_TEST_PROJECT=acb-kmz-test-20261012`,
+`MONGO_URI=mongodb://acb_mongo_db:27017` y `MONGO_DATABASE=geolocaacb`.
+
+La asociación se calcula con la variante del PE ya resuelto como extremo
+(`start` para `541`, `end` para `542`) y se ordena por número de PE. Las rutas sin
+un extremo PE o sin variante resoluble se omiten y se reportan en el resumen.

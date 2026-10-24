@@ -42,3 +42,26 @@ Las pruebas unitarias se ejecutan con unittest. La integración real requiere
 `ACB_INTEGRATION_ROUTE_ID`, las dos variables de política y la configuración de
 MongoDB. Solo lee MongoDB, verifica HTTP y compara todos los documentos e índices
 antes y después. No configura asociaciones ni inserta fixtures.
+
+## Tolerancias de extremos de ruta
+
+La importación KMZ resuelve inicio y fin de las rutas 541/542 desde los puntos de
+encuentro y colegios. La política se carga una vez por lifespan en
+`app.state.endpoint_policy` desde:
+
+- `ACB_ENDPOINT_PE_TOLERANCE_M` (150 m por defecto): distancia de referencia entre
+  un vértice extremo y el punto de encuentro elegido por numeración para el mismo
+  código de ruta. Un `PE` numerado fuera de este umbral se usa igualmente, pero con
+  `confidence: low`.
+- `ACB_ENDPOINT_SCHOOL_TOLERANCE_M` (120 m por defecto): distancia máxima entre un
+  vértice extremo y un colegio. Fuera de este umbral el colegio no se asocia.
+
+Valores ausentes, no finitos o no positivos usan el valor por defecto con un
+warning. Los puntos explícitos de inicio y fin dentro de la carpeta de la ruta
+tienen prioridad sobre la inferencia.
+
+La inferencia usa la numeración de los puntos de encuentro: en rutas `541` el
+inicio es el `PE` de menor número y el fin el colegio; en rutas `542` el inicio es
+el colegio y el fin el `PE` de mayor número. La geometría solo determina el lado del
+colegio, la variante (`542`/`542 B`) y las distancias. Si no hay `PE` numerados se
+mantiene el emparejamiento geométrico de respaldo.

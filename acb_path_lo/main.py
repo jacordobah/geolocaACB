@@ -13,6 +13,7 @@ from .infrastructure.persistence.mongo_map_repository import MongoMapRepository
 from .infrastructure.persistence.mongo_route_status_repository import (
     MongoRouteStatusRepository,
 )
+from .infrastructure.config.endpoints import load_endpoint_policy
 from .infrastructure.config.geofence import load_geofence_policy
 from .infrastructure.api.routes.tracking import router as tracking_router
 from .infrastructure.persistence.mongo_tracking_repository import MongoTrackingRepository
@@ -28,6 +29,7 @@ from .domain.tracking_errors import TrackingStoreUnavailable
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.geofence_policy = load_geofence_policy()
+    app.state.endpoint_policy = load_endpoint_policy()
     app.state.tracking_policy = load_tracking_policy()
     app.state.tracking_history_policy = load_history_policy()
     service_hash = os.getenv("ACB_TRACKING_SERVICE_TOKEN_SHA256")

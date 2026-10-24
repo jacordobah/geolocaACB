@@ -1,7 +1,12 @@
 from uuid import uuid4
 
 from ..ports.kmz_reader import KmzReader
+from ...domain.model.endpoint_policy import EndpointPolicy
+from ...domain.model.point_kind import STORED_POINT_KINDS
 from ...domain.repositories.map_repository import MapRepository
+from ...domain.services.route_endpoints import resolve_route_endpoints
+from ...domain.services.route_meeting_points import resolve_route_meeting_points
+
 
 class ImportKmz:
 
@@ -9,12 +14,15 @@ class ImportKmz:
         self,
         reader: KmzReader,
         repository: MapRepository,
+        endpoint_policy: EndpointPolicy | None = None,
     ):
         self.reader = reader
         self.repository = repository
+        self.endpoint_policy = endpoint_policy or EndpointPolicy()
 
     async def execute(self, content: bytes) -> dict:
         routes, points = self.reader.read(content)
+        points = [point for point in points if point.kind in STORED_POINT_KINDS]
 
         if not routes and not points:
             raise ValueError(
@@ -23,14 +31,29 @@ class ImportKmz:
 
         import_id = str(uuid4())
 
+        endpoints = resolve_route_endpoints(
+            routes,
+            points,
+            pe_tolerance_m=self.endpoint_policy.pe_tolerance_m,
+            school_tolerance_m=self.endpoint_policy.school_tolerance_m,
+        )
+        route_meeting_points = resolve_route_meeting_points(routes, points, endpoints)
+
         await self.repository.save_import(
             import_id,
             routes,
             points,
+            endpoints,
+            route_meeting_points,
         )
 
         return {
             "import_id": import_id,
             "saved_routes": len(routes),
             "saved_points": len(points),
+            "endpoints": {
+                "resolved": sum(item.status == "resolved" for item in endpoints),
+                "unresolved": sum(item.status == "unresolved" for item in endpoints),
+                "not_applicable": sum(item.status == "not_applicable" for item in endpoints),
+            },
         }
