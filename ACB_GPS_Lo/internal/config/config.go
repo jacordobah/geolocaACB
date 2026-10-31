@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -10,11 +11,14 @@ import (
 )
 
 type Config struct {
-	HTTPPort         int
-	RedisAddr        string
-	RedisDialTimeout time.Duration
-	RedisPingTimeout time.Duration
-	ShutdownTimeout  time.Duration
+	HTTPPort              int
+	RedisAddr             string
+	RedisDialTimeout      time.Duration
+	RedisPingTimeout      time.Duration
+	ShutdownTimeout       time.Duration
+	PathsBaseURL          string
+	PathsHTTPTimeout      time.Duration
+	PathsMaxResponseBytes int64
 }
 
 func Load() (Config, error) {
@@ -61,7 +65,38 @@ func Parse(lookup func(string) (string, bool)) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	cfg.PathsBaseURL, err = optionalURL(lookup, "GPS_PATHS_BASE_URL")
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.PathsHTTPTimeout, err = duration(lookup, "GPS_PATHS_HTTP_TIMEOUT", "3s")
+	if err != nil {
+		return Config{}, err
+	}
+	maxBytes, err := value(lookup, "GPS_PATHS_MAX_RESPONSE_BYTES", "2097152")
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.PathsMaxResponseBytes, err = strconv.ParseInt(maxBytes, 10, 64)
+	if err != nil || cfg.PathsMaxResponseBytes < 1 || cfg.PathsMaxResponseBytes > 64<<20 {
+		return Config{}, fmt.Errorf("GPS_PATHS_MAX_RESPONSE_BYTES must be between 1 and 67108864")
+	}
 	return cfg, nil
+}
+
+func optionalURL(lookup func(string) (string, bool), name string) (string, error) {
+	raw, present := lookup(name)
+	if !present || strings.TrimSpace(raw) == "" {
+		return "", nil
+	}
+	raw = strings.TrimSpace(raw)
+	parsed, err := url.Parse(raw)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") ||
+		parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" ||
+		parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+		return "", fmt.Errorf("%s must be an http(s) origin without path, query, fragment or credentials", name)
+	}
+	return strings.TrimRight(raw, "/"), nil
 }
 
 func value(lookup func(string) (string, bool), name, fallback string) (string, error) {
