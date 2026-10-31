@@ -1,5 +1,3 @@
-from uuid import uuid4
-
 from ..ports.kmz_reader import KmzReader
 from ...domain.model.endpoint_policy import EndpointPolicy
 from ...domain.model.point_kind import STORED_POINT_KINDS
@@ -31,8 +29,6 @@ class ImportKmz:
                 "The file does not contain any valid routes or meeting points"
             )
 
-        import_id = str(uuid4())
-
         endpoints = resolve_route_endpoints(
             routes,
             points,
@@ -42,7 +38,6 @@ class ImportKmz:
         route_meeting_points = resolve_route_meeting_points(routes, points, endpoints)
 
         await self.repository.save_import(
-            import_id,
             routes,
             points,
             endpoints,
@@ -50,7 +45,6 @@ class ImportKmz:
         )
 
         return {
-            "import_id": import_id,
             "saved_routes": len(routes),
             "saved_points": len(points),
             "endpoints": {

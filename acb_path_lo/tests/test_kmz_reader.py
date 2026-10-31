@@ -150,6 +150,7 @@ class KmzReaderTests(unittest.TestCase):
 
         self.assertEqual(len(routes), 2)
         self.assertEqual([route.code for route in routes], ["541", "542"])
+        self.assertEqual([route.route_code for route in routes], ["MM01", "MM01"])
         self.assertEqual(routes[0].folder_path[-1], "MM01 – COLEGIO DEMO")
         self.assertIn("RUTAS", routes[0].folder_path)
 
@@ -175,6 +176,7 @@ class KmzReaderTests(unittest.TestCase):
         routes, points = KmzReaderImpl().read(make_kmz(SINGULAR_KML))
 
         self.assertEqual(len(routes), 1)
+        self.assertEqual(routes[0].route_code, "MM03")
         self.assertIn("RUTA", routes[0].folder_path)
         self.assertEqual(points[0].name, "PE01")
         self.assertEqual(points[0].kind, PointKind.MEETING_POINT)

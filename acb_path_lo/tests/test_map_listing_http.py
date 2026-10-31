@@ -29,12 +29,12 @@ class MapListingHttpTests(unittest.IsolatedAsyncioTestCase):
         self.repository = MongoMapRepository(Database())
         self.route_id, self.point_id = ObjectId(), ObjectId()
         self.route = {
-            '_id': self.route_id, 'import_id': 'configured-import', 'name': 'Route',
+            '_id': self.route_id, 'name': 'Route',
             'first_meeting_point_id': self.point_id,
             'geometry': {'type': 'LineString', 'coordinates': [[-74.1, 4.6], [-74.2, 4.7]]},
         }
         self.point = {
-            '_id': self.point_id, 'import_id': 'configured-import', 'name': 'PE01',
+            '_id': self.point_id, 'name': 'PE01',
             'location': {'type': 'Point', 'coordinates': [-74.1, 4.6]},
         }
         self.repository.routes.documents[self.route_id] = self.route
@@ -64,15 +64,16 @@ class MapListingHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([pe['longitude'], pe['latitude']], [-74.1, 4.6])
         self.assertEqual((self.route, self.point), before)
 
-    async def test_filters_keep_imports_separate(self):
+    async def test_listing_returns_all_documents(self):
         other_id = ObjectId()
-        self.repository.routes.documents[other_id] = {'_id': other_id, 'import_id': 'other'}
-        routes = await self.repository.list_routes('configured-import')
-        points = await self.repository.list_meeting_points('configured-import')
-        self.assertEqual([route['_id'] for route in routes], [str(self.route_id)])
+        self.repository.routes.documents[other_id] = {'_id': other_id}
+        routes = await self.repository.list_routes()
+        points = await self.repository.list_meeting_points()
+        self.assertEqual(
+            {route['_id'] for route in routes},
+            {str(self.route_id), str(other_id)},
+        )
         self.assertEqual([point['_id'] for point in points], [str(self.point_id)])
-        self.assertEqual(await self.repository.list_routes('missing'), [])
-        self.assertEqual(await self.repository.list_meeting_points('missing'), [])
 
     def test_openapi_contains_all_endpoint_contracts(self):
         paths = app.openapi()['paths']
@@ -86,3 +87,9 @@ class MapListingHttpTests(unittest.IsolatedAsyncioTestCase):
             ('/api/v1/routes/{route_id}/endpoints', 'get'),
         ]:
             self.assertIn(method, paths[path])
+        for path in ('/api/v1/routes', '/api/v1/meeting-points'):
+            parameter_names = {
+                parameter['name']
+                for parameter in paths[path]['get'].get('parameters', [])
+            }
+            self.assertNotIn('import_id', parameter_names)

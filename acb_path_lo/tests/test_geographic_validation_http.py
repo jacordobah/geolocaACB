@@ -35,9 +35,9 @@ async def asgi_post(path, payload):
 class ReadOnlyRepository:
     async def get_first_meeting_point(self, route_id):
         return FirstMeetingPoint(route_id, 'point', 'PE01', -74, 4)
-    async def list_routes(self, import_id=None):
+    async def list_routes(self):
         return []
-    async def list_meeting_points(self, import_id=None):
+    async def list_meeting_points(self):
         return []
 
 

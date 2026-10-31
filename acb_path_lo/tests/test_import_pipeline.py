@@ -29,10 +29,21 @@ class FakeCollection:
         self.documents.extend(documents)
 
     def delete_many(self, query):
+        if "_id" in query and isinstance(query["_id"], dict):
+            identifiers = set(query["_id"].get("$in", []))
+            self.documents = [
+                document
+                for document in self.documents
+                if document["_id"] not in identifiers
+            ]
+            return
         self.documents = [
             document
             for document in self.documents
-            if document["import_id"] != query["import_id"]
+            if all(
+                document.get(key) == value
+                for key, value in query.items()
+            )
         ]
 
     def find(self, query):
@@ -65,9 +76,11 @@ def make_kmz() -> bytes:
             <kml xmlns="http://www.opengis.net/kml/2.2">
               <Document>
                 <Folder>
-                  <name>RUTAS AL COLEGIO EN BICI</name>
+                  <name>JORNADA MAÑANA</name>
                   <Folder>
-                    <name>MM01 - COLEGIO DEMO</name>
+                    <name>RUTAS AL COLEGIO EN BICI</name>
+                    <Folder>
+                      <name>MM01 - COLEGIO DEMO</name>
                   <Folder>
                     <name>CE RUTA DE CONFIANZA</name>
                     <Placemark>
@@ -138,6 +151,7 @@ def make_kmz() -> bytes:
                           <Point><coordinates>-74.15,4.65,0</coordinates></Point>
                         </Placemark>
                       </Folder>
+                    </Folder>
                     </Folder>
                   </Folder>
                 </Folder>
@@ -219,10 +233,10 @@ class ImportPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(points[2]["description"], "Entrada principal")
         self.assertEqual(points[2]["kind"], "school")
         self.assertEqual(points[0]["kind"], "meeting_point")
-        self.assertEqual(
-            points[0]["folder_path"][-2:],
-            ["PUNTOS DE ENCUENTRO", "PUNTOS DE ENCUENTRO 541"],
-        )
+        self.assertEqual(routes[0]["route_code"], "MM01")
+        self.assertEqual(routes[0]["day_shift"], "JORNADA MAÑANA")
+        self.assertEqual(routes[1]["route_code"], "MM01")
+        self.assertEqual(routes[1]["day_shift"], "JORNADA MAÑANA")
         self.assertEqual(routes[0]["code"], "541")
         self.assertEqual(routes[0]["endpoint_status"], "resolved")
         self.assertEqual(routes[0]["start_meeting_point_id"], points[0]["_id"])
@@ -238,12 +252,9 @@ class ImportPipelineTests(unittest.IsolatedAsyncioTestCase):
             ["PE01", "PE01", "SAN FRANCISCO DE ASIS"],
         )
         self.assertNotIn("PUNTO DE INICIO", [point["name"] for point in points])
-        self.assertTrue(
-            all(
-                document["import_id"] == result["import_id"]
-                for document in routes + points
-            )
-        )
+        for document in routes + points:
+            self.assertNotIn("import_id", document)
+            self.assertNotIn("folder_path", document)
 
     async def test_import_rolls_back_points_when_route_insert_fails(self):
         database = FakeDatabase()
@@ -268,7 +279,7 @@ class ImportPipelineTests(unittest.IsolatedAsyncioTestCase):
         ]
 
         with self.assertRaises(ValueError):
-            await repository.save_import("test-import", [route], [], endpoints, [])
+            await repository.save_import([route], [], endpoints, [])
 
         self.assertEqual(database["meeting_points"].documents, [])
         self.assertEqual(database["routes"].documents, [])
@@ -289,7 +300,7 @@ class ImportPipelineTests(unittest.IsolatedAsyncioTestCase):
         ]
 
         with self.assertRaises(ValueError):
-            await repository.save_import("test-import", [route], [], endpoints, [])
+            await repository.save_import([route], [], endpoints, [])
 
         self.assertEqual(database["meeting_points"].documents, [])
         self.assertEqual(database["routes"].documents, [])
@@ -313,11 +324,6 @@ class ImportPipelineTests(unittest.IsolatedAsyncioTestCase):
             isinstance(reference, str)
             for reference in routes[0]["meeting_point_ids"]
         ))
-
-        import_id = routes[0]["import_id"]
-        self.assertEqual(len(await repository.list_routes(import_id)), 2)
-        self.assertEqual(len(await repository.list_meeting_points(import_id)), 3)
-        self.assertEqual(len(await repository.list_routes("missing")), 0)
 
 
 if __name__ == "__main__":

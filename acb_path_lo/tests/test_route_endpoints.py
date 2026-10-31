@@ -377,7 +377,7 @@ class EndpointRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.repository = MongoMapRepository(self.database)
         self.route_id, self.start_id, self.end_id = ObjectId(), ObjectId(), ObjectId()
         self.route = {
-            "_id": self.route_id, "import_id": "test-import",
+            "_id": self.route_id,
             "endpoint_status": "resolved",
             "start_meeting_point_id": self.start_id,
             "end_meeting_point_id": self.end_id,
@@ -387,11 +387,11 @@ class EndpointRepositoryTests(unittest.IsolatedAsyncioTestCase):
             },
         }
         self.start = {
-            "_id": self.start_id, "import_id": "test-import", "name": "PE01",
+            "_id": self.start_id, "name": "PE01",
             "location": {"type": "Point", "coordinates": [-74.1, 4.6]},
         }
         self.end = {
-            "_id": self.end_id, "import_id": "test-import", "name": "COLEGIO DEMO",
+            "_id": self.end_id, "name": "COLEGIO DEMO",
             "location": {"type": "Point", "coordinates": [-74.2, 4.7]},
         }
         self.repository.routes.documents[self.route_id] = self.route
@@ -412,11 +412,6 @@ class EndpointRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.route.pop("start_meeting_point_id")
         self.route.pop("end_meeting_point_id")
         with self.assertRaises(RouteEndpointsNotConfigured):
-            await self.repository.get_route_endpoints(str(self.route_id))
-
-    async def test_cross_import_reference_is_rejected(self):
-        self.start["import_id"] = "other-import"
-        with self.assertRaises(AssociationConflict):
             await self.repository.get_route_endpoints(str(self.route_id))
 
     async def test_missing_point(self):
@@ -447,7 +442,7 @@ class EndpointHttpTests(unittest.IsolatedAsyncioTestCase):
         self.repository = MongoMapRepository(self.database)
         self.route_id, self.start_id, self.end_id = ObjectId(), ObjectId(), ObjectId()
         self.route = {
-            "_id": self.route_id, "import_id": "test-import",
+            "_id": self.route_id,
             "endpoint_status": "resolved",
             "start_meeting_point_id": self.start_id,
             "end_meeting_point_id": self.end_id,
@@ -455,11 +450,11 @@ class EndpointHttpTests(unittest.IsolatedAsyncioTestCase):
         }
         self.repository.routes.documents[self.route_id] = self.route
         self.repository.meeting_points.documents[self.start_id] = {
-            "_id": self.start_id, "import_id": "test-import", "name": "PE01",
+            "_id": self.start_id, "name": "PE01",
             "location": {"type": "Point", "coordinates": [-74.1, 4.6]},
         }
         self.repository.meeting_points.documents[self.end_id] = {
-            "_id": self.end_id, "import_id": "test-import", "name": "COLEGIO DEMO",
+            "_id": self.end_id, "name": "COLEGIO DEMO",
             "location": {"type": "Point", "coordinates": [-74.2, 4.7]},
         }
 

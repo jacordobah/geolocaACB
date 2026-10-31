@@ -25,18 +25,18 @@ Dentro del contenedor temporal conectado a esa red, con `MONGO_URI` igual a
 docker --context desktop-linux exec acb-rf09-phase1-preview python -B -m acb_path_lo.infrastructure.tools.configure_first_meeting_point --route-id $RouteId --point-id $PointId --confirm
 ```
 
-La herramienta verifica existencia, geometría y coincidencia de `import_id`.
-La actualización condicional de la ruta es atómica, sin upsert. Acepta una
-referencia ausente o idéntica; rechaza una diferente. Una referencia explícita
-nula también requiere revisión y no se reemplaza automáticamente.
+La herramienta verifica existencia y geometría del punto. La actualización
+condicional de la ruta es atómica, sin upsert. Acepta una referencia ausente o
+idéntica; rechaza una diferente. Una referencia explícita nula también requiere
+revisión y no se reemplaza automáticamente.
 
 MongoDB standalone no admite una transacción entre los dos documentos. La
-existencia y pertenencia del punto se verifican antes de la actualización; una
-eliminación o modificación concurrente externa del punto no queda protegida.
-Para este prototipo no deben ejecutarse esas operaciones concurrentes. La lectura
-también verifica existencia, pertenencia y geometría, y devuelve un conflicto si
-la referencia deja de ser válida. Una garantía transaccional futura requeriría
-un despliegue compatible con transacciones; esta fase no cambia MongoDB.
+existencia del punto se verifica antes de la actualización; una eliminación o
+modificación concurrente externa del punto no queda protegida. Para este
+prototipo no deben ejecutarse esas operaciones concurrentes. La lectura también
+verifica existencia y geometría, y devuelve un conflicto si la referencia deja de
+ser válida. Una garantía transaccional futura requeriría un despliegue compatible
+con transacciones; esta fase no cambia MongoDB.
 
 La consulta pública de lectura es:
 
@@ -55,24 +55,3 @@ optativa, solo de lectura, y requiere `ACB_INTEGRATION_URL`,
 `MONGO_DATABASE`. Dentro de la API temporal, la URL es `http://localhost:8000`;
 desde Windows es `http://localhost:18000`.
 
-## Backfill de puntos de encuentro por ruta
-
-Las importaciones nuevas guardan `meeting_point_ids` en cada ruta `541` o `542`
-resuelta. Para rutas importadas antes de ese cambio, la herramienta completa
-únicamente las rutas que no tienen el campo. No modifica
-`first_meeting_point_id`, `start_meeting_point_id` ni `end_meeting_point_id`.
-
-Primero se recomienda una ejecución sin escritura:
-
-```powershell
-docker --context desktop-linux exec acb-rf09-phase1-preview python -B -m acb_path_lo.infrastructure.tools.backfill_route_meeting_points --import-id $ImportId --dry-run
-```
-
-Después de revisar el resultado, ejecutar con `--confirm`. La herramienta usa las
-mismas protecciones de entorno que las demás herramientas locales: exige
-`ACB_TEST_PROJECT=acb-kmz-test-20261012`,
-`MONGO_URI=mongodb://acb_mongo_db:27017` y `MONGO_DATABASE=geolocaacb`.
-
-La asociación se calcula con la variante del PE ya resuelto como extremo
-(`start` para `541`, `end` para `542`) y se ordena por número de PE. Las rutas sin
-un extremo PE o sin variante resoluble se omiten y se reportan en el resumen.

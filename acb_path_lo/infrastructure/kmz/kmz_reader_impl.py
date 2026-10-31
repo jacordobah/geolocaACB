@@ -6,6 +6,7 @@ import xml.etree.ElementTree as ET
 from ...domain.model.route import Route
 from ...domain.model.meeting_point import MeetingPoint
 from ...domain.model.point_kind import PointKind
+from ...domain.services.route_metadata import day_shift, route_group_code
 from ...domain.services.text_matching import normalize_label
 
 NS = {"kml": "http://www.opengis.net/kml/2.2"}
@@ -169,6 +170,8 @@ class KmzReaderImpl:
                                         coordinates=coordinates,
                                         code=route_code(name),
                                         folder_path=folder_path,
+                                        route_code=route_group_code(folder_path),
+                                        day_shift=day_shift(folder_path),
                                     )
                                 )
 

@@ -52,10 +52,10 @@ class RouteDetailHttpTests(unittest.IsolatedAsyncioTestCase):
         self.first_id, self.second_id, self.school_id = ObjectId(), ObjectId(), ObjectId()
         self.route = {
             "_id": self.route_id,
-            "import_id": "test-import",
             "name": "541 RUTA DEMO",
+            "route_code": "MM01",
             "code": "541",
-            "folder_path": ["ZONA 5", "RUTAS AL COLEGIO EN BICI", "COLEGIO"],
+            "day_shift": "JORNADA MAÑANA",
             "geometry": {"type": "LineString", "coordinates": [[-74.1, 4.6], [-74.2, 4.7]]},
             "endpoint_status": "resolved",
             "start_meeting_point_id": self.first_id,
@@ -64,20 +64,20 @@ class RouteDetailHttpTests(unittest.IsolatedAsyncioTestCase):
         }
         self.points = {
             self.first_id: {
-                "_id": self.first_id, "import_id": "test-import", "name": "PE01",
-                "kind": "meeting_point", "folder_path": ["..."],
+                "_id": self.first_id, "name": "PE01",
+                "kind": "meeting_point",
                 "description": None,
                 "location": {"type": "Point", "coordinates": [-74.1, 4.6]},
             },
             self.second_id: {
-                "_id": self.second_id, "import_id": "test-import", "name": "PE02",
-                "kind": "meeting_point", "folder_path": ["..."],
+                "_id": self.second_id, "name": "PE02",
+                "kind": "meeting_point",
                 "description": None,
                 "location": {"type": "Point", "coordinates": [-74.15, 4.65]},
             },
             self.school_id: {
-                "_id": self.school_id, "import_id": "test-import", "name": "COLEGIO",
-                "kind": "school", "folder_path": ["..."],
+                "_id": self.school_id, "name": "COLEGIO",
+                "kind": "school",
                 "location": {"type": "Point", "coordinates": [-74.2, 4.7]},
             },
         }
@@ -103,6 +103,10 @@ class RouteDetailHttpTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(body["start_meeting_point_id"], str(self.first_id))
         self.assertEqual(body["end_meeting_point_id"], str(self.school_id))
+        self.assertEqual(body["route_code"], "MM01")
+        self.assertEqual(body["day_shift"], "JORNADA MAÑANA")
+        self.assertNotIn("import_id", body)
+        self.assertNotIn("folder_path", body)
 
     async def test_route_without_relation_returns_empty_points(self):
         self.route.pop("meeting_point_ids")
@@ -123,19 +127,12 @@ class RouteDetailHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 422)
         self.assertEqual(body["detail"]["code"], "invalid_identifier")
 
-    async def test_missing_or_cross_import_reference_is_rejected(self):
+    async def test_missing_reference_is_rejected(self):
         self.repository.meeting_points.documents.pop(self.second_id)
 
         status, body = await self.get(f"/api/v1/routes/{self.route_id}")
         self.assertEqual(status, 409)
         self.assertEqual(body["detail"]["code"], "referenced_meeting_point_not_found")
-
-        self.repository.meeting_points.documents[self.second_id] = {
-            **self.points[self.second_id], "import_id": "other-import",
-        }
-        status, body = await self.get(f"/api/v1/routes/{self.route_id}")
-        self.assertEqual(status, 409)
-        self.assertEqual(body["detail"]["code"], "invalid_geographic_association")
 
     async def test_malformed_geometry_and_reference_are_rejected(self):
         self.repository.meeting_points.documents[self.second_id]["location"] = None
