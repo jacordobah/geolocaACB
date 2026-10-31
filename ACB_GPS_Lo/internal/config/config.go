@@ -19,6 +19,8 @@ type Config struct {
 	PathsBaseURL          string
 	PathsHTTPTimeout      time.Duration
 	PathsMaxResponseBytes int64
+	GPSRetention          time.Duration
+	GPSSafetyMargin       time.Duration
 }
 
 func Load() (Config, error) {
@@ -81,7 +83,27 @@ func Parse(lookup func(string) (string, bool)) (Config, error) {
 	if err != nil || cfg.PathsMaxResponseBytes < 1 || cfg.PathsMaxResponseBytes > 64<<20 {
 		return Config{}, fmt.Errorf("GPS_PATHS_MAX_RESPONSE_BYTES must be between 1 and 67108864")
 	}
+	cfg.GPSRetention, err = duration(lookup, "GPS_POSITION_RETENTION", "24h")
+	if err != nil || cfg.GPSRetention < 24*time.Hour || cfg.GPSRetention > 365*24*time.Hour {
+		return Config{}, fmt.Errorf("GPS_POSITION_RETENTION must be between 24h and 8760h")
+	}
+	cfg.GPSSafetyMargin, err = nonnegativeDuration(lookup, "GPS_POSITION_SAFETY_MARGIN", "5m")
+	if err != nil || cfg.GPSSafetyMargin > 24*time.Hour {
+		return Config{}, fmt.Errorf("GPS_POSITION_SAFETY_MARGIN must be between 0s and 24h")
+	}
 	return cfg, nil
+}
+
+func nonnegativeDuration(lookup func(string) (string, bool), name, fallback string) (time.Duration, error) {
+	raw, err := value(lookup, name, fallback)
+	if err != nil {
+		return 0, err
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d < 0 {
+		return 0, fmt.Errorf("%s must be nonnegative", name)
+	}
+	return d, nil
 }
 
 func optionalURL(lookup func(string) (string, bool), name string) (string, error) {

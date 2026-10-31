@@ -23,7 +23,7 @@ func TestParseDefaultsAndOverrides(t *testing.T) {
 		defaults.RedisPingTimeout != time.Second ||
 		defaults.ShutdownTimeout != 20*time.Second ||
 		defaults.PathsBaseURL != "" || defaults.PathsHTTPTimeout != 3*time.Second ||
-		defaults.PathsMaxResponseBytes != 2<<20 {
+		defaults.PathsMaxResponseBytes != 2<<20 || defaults.GPSRetention != 24*time.Hour || defaults.GPSSafetyMargin != 5*time.Minute {
 		t.Fatalf("unexpected defaults: %+v", defaults)
 	}
 
@@ -33,6 +33,7 @@ func TestParseDefaultsAndOverrides(t *testing.T) {
 		"GPS_SHUTDOWN_TIMEOUT":   "3s",
 		"GPS_PATHS_BASE_URL":     "http://geoloca-api:8000/",
 		"GPS_PATHS_HTTP_TIMEOUT": "700ms", "GPS_PATHS_MAX_RESPONSE_BYTES": "4096",
+		"GPS_POSITION_RETENTION": "48h", "GPS_POSITION_SAFETY_MARGIN": "0s",
 	}))
 	if err != nil {
 		t.Fatal(err)
@@ -42,7 +43,7 @@ func TestParseDefaultsAndOverrides(t *testing.T) {
 		cfg.RedisPingTimeout != 250*time.Millisecond ||
 		cfg.ShutdownTimeout != 3*time.Second ||
 		cfg.PathsBaseURL != "http://geoloca-api:8000" ||
-		cfg.PathsHTTPTimeout != 700*time.Millisecond || cfg.PathsMaxResponseBytes != 4096 {
+		cfg.PathsHTTPTimeout != 700*time.Millisecond || cfg.PathsMaxResponseBytes != 4096 || cfg.GPSRetention != 48*time.Hour || cfg.GPSSafetyMargin != 0 {
 		t.Fatalf("unexpected overrides: %+v", cfg)
 	}
 }
@@ -67,6 +68,8 @@ func TestParseRejectsInvalidValues(t *testing.T) {
 		{"invalid HTTP timeout", "GPS_PATHS_HTTP_TIMEOUT", "0s"},
 		{"zero response limit", "GPS_PATHS_MAX_RESPONSE_BYTES", "0"},
 		{"huge response limit", "GPS_PATHS_MAX_RESPONSE_BYTES", "67108865"},
+		{"short retention", "GPS_POSITION_RETENTION", "23h"},
+		{"negative safety margin", "GPS_POSITION_SAFETY_MARGIN", "-1s"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
