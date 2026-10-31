@@ -68,8 +68,21 @@ def make_kmz() -> bytes:
                   <name>RUTAS AL COLEGIO EN BICI</name>
                   <Folder>
                     <name>MM01 - COLEGIO DEMO</name>
-                    <Folder>
-                      <name>RUTAS</name>
+                  <Folder>
+                    <name>CE RUTA DE CONFIANZA</name>
+                    <Placemark>
+                      <name>541</name>
+                      <LineString>
+                        <coordinates>-74.3,4.8,0 -74.4,4.9,0</coordinates>
+                      </LineString>
+                    </Placemark>
+                    <Placemark>
+                      <name>PUNTO DE INICIO</name>
+                      <Point><coordinates>-74.3,4.8,0</coordinates></Point>
+                    </Placemark>
+                  </Folder>
+                  <Folder>
+                    <name>RUTAS</name>
                       <Folder>
                         <name>MM01 - COLEGIO DEMO</name>
                         <Placemark>
@@ -82,6 +95,12 @@ def make_kmz() -> bytes:
                           <name>542 RUTA DEMO</name>
                           <LineString>
                             <coordinates>-74.2,4.7,0 -74.1,4.6,0</coordinates>
+                          </LineString>
+                        </Placemark>
+                        <Placemark>
+                          <name>RUTA CENTRO DE FORTALECIMIENTO</name>
+                          <LineString>
+                            <coordinates>-74.3,4.8,0 -74.4,4.9,0</coordinates>
                           </LineString>
                         </Placemark>
                         <Folder>
@@ -134,6 +153,22 @@ def make_kmz() -> bytes:
                   <coordinates>-75.1,5.6 -75.2,5.7</coordinates>
                 </LineString>
               </Placemark>
+              <Folder>
+                <name>CICLOEXPEDICIONES</name>
+                <Placemark>
+                  <name>541 RUTA CICLO</name>
+                  <LineString>
+                    <coordinates>-75.1,5.6 -75.2,5.7</coordinates>
+                  </LineString>
+                </Placemark>
+                <Folder>
+                  <name>PUNTOS DE ENCUENTRO 541</name>
+                  <Placemark>
+                    <name>PE01</name>
+                    <Point><coordinates>-75.1,5.6,0</coordinates></Point>
+                  </Placemark>
+                </Folder>
+              </Folder>
             </kml>""",
         )
     return archive.getvalue()
@@ -154,14 +189,18 @@ class ImportPipelineTests(unittest.IsolatedAsyncioTestCase):
 
         routes = database["routes"].documents
         points = database["meeting_points"].documents
-        self.assertEqual(result["saved_routes"], 3)
+        self.assertEqual(result["saved_routes"], 2)
         self.assertEqual(result["saved_points"], 3)
         self.assertEqual(
             result["endpoints"],
-            {"resolved": 2, "unresolved": 0, "not_applicable": 1},
+            {"resolved": 2, "unresolved": 0, "not_applicable": 0},
         )
-        self.assertEqual(len(routes), 3)
+        self.assertEqual(len(routes), 2)
         self.assertEqual(len(points), 3)
+        self.assertEqual(
+            [route["name"] for route in routes],
+            ["541 RUTA DEMO", "542 RUTA DEMO"],
+        )
         self.assertEqual(
             routes[0]["geometry"],
             {
@@ -194,9 +233,11 @@ class ImportPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(routes[1]["end_meeting_point_id"], points[1]["_id"])
         self.assertEqual(routes[1]["meeting_point_ids"], [points[1]["_id"]])
         self.assertNotIn("first_meeting_point_id", routes[1])
-        self.assertEqual(routes[2]["endpoint_status"], "not_applicable")
-        self.assertNotIn("start_meeting_point_id", routes[2])
-        self.assertEqual(routes[2]["meeting_point_ids"], [])
+        self.assertEqual(
+            [point["name"] for point in points],
+            ["PE01", "PE01", "SAN FRANCISCO DE ASIS"],
+        )
+        self.assertNotIn("PUNTO DE INICIO", [point["name"] for point in points])
         self.assertTrue(
             all(
                 document["import_id"] == result["import_id"]
@@ -261,7 +302,7 @@ class ImportPipelineTests(unittest.IsolatedAsyncioTestCase):
         routes = await repository.list_routes()
         points = await repository.list_meeting_points()
 
-        self.assertEqual(len(routes), 3)
+        self.assertEqual(len(routes), 2)
         self.assertEqual(len(points), 3)
         self.assertEqual(routes[0]["name"], "541 RUTA DEMO")
         self.assertEqual(points[0]["name"], "PE01")
@@ -274,7 +315,7 @@ class ImportPipelineTests(unittest.IsolatedAsyncioTestCase):
         ))
 
         import_id = routes[0]["import_id"]
-        self.assertEqual(len(await repository.list_routes(import_id)), 3)
+        self.assertEqual(len(await repository.list_routes(import_id)), 2)
         self.assertEqual(len(await repository.list_meeting_points(import_id)), 3)
         self.assertEqual(len(await repository.list_routes("missing")), 0)
 

@@ -79,6 +79,18 @@ class BackfillRouteMeetingPointsTests(unittest.IsolatedAsyncioTestCase):
         existing = routes[0]["meeting_point_ids"]
         for route in routes:
             route.pop("meeting_point_ids", None)
+        routes.append({
+            "_id": ObjectId(),
+            "import_id": routes[0]["import_id"],
+            "name": "541 RUTA SIN VARIANTE",
+            "code": "541",
+            "folder_path": ["RUTAS AL COLEGIO EN BICI", "MM02", "RUTAS"],
+            "geometry": {
+                "type": "LineString",
+                "coordinates": [[-74.1, 4.6], [-74.2, 4.7]],
+            },
+            "endpoint_status": "unresolved",
+        })
 
         counts = backfill(database)
 
