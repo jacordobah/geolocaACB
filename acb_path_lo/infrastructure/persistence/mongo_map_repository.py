@@ -312,6 +312,20 @@ class MongoMapRepository:
     async def list_routes(self) -> list[dict]:
         return await asyncio.to_thread(self._list_documents, self.routes)
 
+    async def find_routes_by_codes(self, code: str, route_code: str) -> list[dict]:
+        return await asyncio.to_thread(
+            self._find_routes_by_codes, code, route_code,
+        )
+
+    def _find_routes_by_codes(self, code: str, route_code: str) -> list[dict]:
+        return [
+            self._serialize(document)
+            for document in self.routes.find({
+                "code": code,
+                "route_code": route_code,
+            })
+        ]
+
     async def list_meeting_points(self) -> list[dict]:
         return await asyncio.to_thread(self._list_documents, self.meeting_points)
 

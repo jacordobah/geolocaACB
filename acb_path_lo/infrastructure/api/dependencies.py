@@ -6,6 +6,7 @@ from ...application.use_cases.import_kmz import ImportKmz
 from ...application.use_cases.get_first_meeting_point import GetFirstMeetingPoint
 from ...application.use_cases.get_route_endpoints import GetRouteEndpoints
 from ...application.use_cases.get_route import GetRoute
+from ...application.use_cases.find_routes import FindRoutes
 from ...application.use_cases.validate_first_meeting_point import ValidateFirstMeetingPoint
 from ...application.use_cases.list_meeting_points import ListMeetingPoints
 from ...application.use_cases.list_routes import ListRoutes
@@ -63,6 +64,9 @@ def get_save_route_status(request: Request) -> SaveRouteStatus:
 
 def get_list_routes(request: Request) -> ListRoutes:
     return ListRoutes(request.app.state.map_repository)
+
+def get_find_routes(request: Request) -> FindRoutes:
+    return FindRoutes(request.app.state.map_repository)
 
 def get_list_meeting_points(request: Request) -> ListMeetingPoints:
     return ListMeetingPoints(request.app.state.map_repository)
