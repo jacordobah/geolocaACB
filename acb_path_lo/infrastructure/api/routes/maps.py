@@ -2,7 +2,8 @@ from fastapi import APIRouter, Depends
 
 from ....application.use_cases.list_meeting_points import ListMeetingPoints
 from ....application.use_cases.list_routes import ListRoutes
-from ..dependencies import get_list_meeting_points, get_list_routes
+from ....application.use_cases.find_routes import FindRoutes
+from ..dependencies import get_find_routes, get_list_meeting_points, get_list_routes
 
 router = APIRouter()
 
@@ -12,6 +13,14 @@ async def list_routes(
     use_case: ListRoutes = Depends(get_list_routes),
 ):
     return await use_case.execute()
+
+@router.get("/routes/search", tags=["Routes"])
+async def find_routes(
+    code: str,
+    route_code: str,
+    use_case: FindRoutes = Depends(get_find_routes),
+):
+    return await use_case.execute(code, route_code)
 
 
 @router.get("/meeting-points", tags=["Meeting points"])
