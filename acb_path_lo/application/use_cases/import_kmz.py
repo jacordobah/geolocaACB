@@ -4,6 +4,7 @@ from ..ports.kmz_reader import KmzReader
 from ...domain.model.endpoint_policy import EndpointPolicy
 from ...domain.model.point_kind import STORED_POINT_KINDS
 from ...domain.repositories.map_repository import MapRepository
+from ...domain.services.import_scope import select_importable_school_data
 from ...domain.services.route_endpoints import resolve_route_endpoints
 from ...domain.services.route_meeting_points import resolve_route_meeting_points
 
@@ -22,6 +23,7 @@ class ImportKmz:
 
     async def execute(self, content: bytes) -> dict:
         routes, points = self.reader.read(content)
+        routes, points = select_importable_school_data(routes, points)
         points = [point for point in points if point.kind in STORED_POINT_KINDS]
 
         if not routes and not points:
