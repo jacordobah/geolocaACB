@@ -76,8 +76,6 @@ class MongoMapRepository:
         point = self.meeting_points.find_one({"_id": reference})
         if point is None:
             raise MeetingPointNotFound("Referenced meeting point not found")
-        if not route.get("import_id") or point.get("import_id") != route["import_id"]:
-            raise AssociationConflict("Route and point belong to different imports")
         return self._point_result(identifier, point)
 
     async def get_route_endpoints(self, route_id: str) -> RouteEndpointsView:
@@ -106,8 +104,6 @@ class MongoMapRepository:
             point = self.meeting_points.find_one({"_id": reference})
             if point is None:
                 raise MeetingPointNotFound("Referenced meeting point not found")
-            if not route.get("import_id") or point.get("import_id") != route["import_id"]:
-                raise AssociationConflict("Route and point belong to different imports")
             name, longitude, latitude = self._point_data(point)
             role_metadata = metadata.get(role)
             if not isinstance(role_metadata, dict):
@@ -149,8 +145,6 @@ class MongoMapRepository:
                 point = by_id.get(reference)
                 if point is None:
                     raise MeetingPointNotFound("Referenced meeting point not found")
-                if not route.get("import_id") or point.get("import_id") != route["import_id"]:
-                    raise AssociationConflict("Route and point belong to different imports")
                 self._point_data(point)
                 points.append(self._serialize(point))
 
@@ -170,13 +164,11 @@ class MongoMapRepository:
         point = self.meeting_points.find_one({"_id": reference})
         if point is None:
             raise MeetingPointNotFound("Meeting point not found")
-        if not route.get("import_id") or point.get("import_id") != route["import_id"]:
-            raise AssociationConflict("Route and point belong to different imports")
         self._point_data(point)
         # Standalone MongoDB: this CAS is atomic for the route document only.
-        # Point existence/import membership was checked above, not transactionally.
+        # Point existence was checked above, not transactionally.
         result = self.routes.update_one(
-            {"_id": identifier, "import_id": route["import_id"], "$or": [
+            {"_id": identifier, "$or": [
                 {"first_meeting_point_id": {"$exists": False}},
                 {"first_meeting_point_id": reference},
             ]},
@@ -192,15 +184,12 @@ class MongoMapRepository:
 
         if not ensure_indexes:
             return
-        self.routes.create_index("import_id")
         self.routes.create_index("meeting_point_ids")
         self.routes.create_index([("geometry", "2dsphere")])
-        self.meeting_points.create_index("import_id")
         self.meeting_points.create_index([("location", "2dsphere")])
 
     async def save_import(
         self,
-        import_id: str,
         routes: list[Route],
         points: list[MeetingPoint],
         endpoints: list[RouteEndpoints],
@@ -227,10 +216,8 @@ class MongoMapRepository:
         point_documents = [
             {
                 "_id": ObjectId(),
-                "import_id": import_id,
                 "name": point.name,
                 "kind": point.kind.value,
-                "folder_path": list(point.folder_path),
                 "description": point.description,
                 "location": {
                     "type": "Point",
@@ -244,10 +231,11 @@ class MongoMapRepository:
             routes, endpoints, route_meeting_points
         ):
             document = {
-                "import_id": import_id,
+                "_id": ObjectId(),
                 "name": route.name,
+                "route_code": route.route_code,
                 "code": route.code,
-                "folder_path": list(route.folder_path),
+                "day_shift": route.day_shift,
                 "endpoint_status": resolved.status,
                 "geometry": {
                     "type": "LineString",
@@ -286,7 +274,6 @@ class MongoMapRepository:
 
         await asyncio.to_thread(
             self._save_documents,
-            import_id,
             route_documents,
             point_documents,
         )
@@ -322,30 +309,15 @@ class MongoMapRepository:
         }
         return reference, metadata
 
-    async def list_routes(self, import_id: str | None = None) -> list[dict]:
-        return await asyncio.to_thread(
-            self._list_documents,
-            self.routes,
-            import_id,
-        )
+    async def list_routes(self) -> list[dict]:
+        return await asyncio.to_thread(self._list_documents, self.routes)
 
-    async def list_meeting_points(
-        self, import_id: str | None = None
-    ) -> list[dict]:
-        return await asyncio.to_thread(
-            self._list_documents,
-            self.meeting_points,
-            import_id,
-        )
+    async def list_meeting_points(self) -> list[dict]:
+        return await asyncio.to_thread(self._list_documents, self.meeting_points)
 
     @classmethod
-    def _list_documents(
-        cls,
-        collection,
-        import_id: str | None,
-    ) -> list[dict]:
-        query = {"import_id": import_id} if import_id else {}
-        return [cls._serialize(document) for document in collection.find(query)]
+    def _list_documents(cls, collection) -> list[dict]:
+        return [cls._serialize(document) for document in collection.find({})]
 
     @staticmethod
     def _serialize(document: dict) -> dict:
@@ -369,7 +341,6 @@ class MongoMapRepository:
 
     def _save_documents(
         self,
-        import_id: str,
         route_documents: list[dict],
         point_documents: list[dict],
     ) -> None:
@@ -379,12 +350,16 @@ class MongoMapRepository:
             if route_documents:
                 self.routes.insert_many(route_documents)
         except PyMongoError:
-            for collection in (self.routes, self.meeting_points):
+            route_ids = [document["_id"] for document in route_documents]
+            point_ids = [document["_id"] for document in point_documents]
+            for collection, identifiers in (
+                (self.routes, route_ids),
+                (self.meeting_points, point_ids),
+            ):
                 try:
-                    collection.delete_many({"import_id": import_id})
+                    collection.delete_many({"_id": {"$in": identifiers}})
                 except PyMongoError:
                     logger.exception(
-                        "Could not roll back partial KMZ import %s",
-                        import_id,
+                        "Could not roll back partial KMZ import",
                     )
             raise

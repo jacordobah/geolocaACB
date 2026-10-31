@@ -22,7 +22,6 @@ class FirstMeetingPointIntegrationTests(unittest.TestCase):
             route = database.routes.find_one({'_id': ObjectId(route_id)})
             point = database.meeting_points.find_one({'_id': ObjectId(point_id)})
             self.assertEqual(route['first_meeting_point_id'], point['_id'])
-            self.assertEqual(route['import_id'], point['import_id'])
             self.assertEqual(body['route_id'], route_id)
             self.assertEqual(body['meeting_point_id'], point_id)
             self.assertEqual([body['longitude'], body['latitude']], point['location']['coordinates'])

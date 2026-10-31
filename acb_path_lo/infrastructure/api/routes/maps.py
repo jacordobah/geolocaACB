@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends
 
 from ....application.use_cases.list_meeting_points import ListMeetingPoints
 from ....application.use_cases.list_routes import ListRoutes
@@ -9,15 +9,13 @@ router = APIRouter()
 
 @router.get("/routes", tags=["Routes"])
 async def list_routes(
-    import_id: str | None = Query(default=None),
     use_case: ListRoutes = Depends(get_list_routes),
 ):
-    return await use_case.execute(import_id)
+    return await use_case.execute()
 
 
 @router.get("/meeting-points", tags=["Meeting points"])
 async def list_meeting_points(
-    import_id: str | None = Query(default=None),
     use_case: ListMeetingPoints = Depends(get_list_meeting_points),
 ):
-    return await use_case.execute(import_id)
+    return await use_case.execute()

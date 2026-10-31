@@ -34,11 +34,9 @@ class Collection:
         if self.before_update:
             self.before_update()
         document = self.documents.get(query['_id'])
-        clauses = query['$or']
-        eligible = document is not None and document['import_id'] == query['import_id']
-        eligible = eligible and (
+        eligible = document is not None and (
             'first_meeting_point_id' not in document
-            or document['first_meeting_point_id'] == clauses[1]['first_meeting_point_id']
+            or document['first_meeting_point_id'] == query['$or'][1]['first_meeting_point_id']
         )
         if not eligible:
             return SimpleNamespace(matched_count=0, modified_count=0)
@@ -61,9 +59,9 @@ class FirstMeetingPointTests(unittest.IsolatedAsyncioTestCase):
         self.database = Database()
         self.repository = MongoMapRepository(self.database)
         self.route_id, self.point_id = ObjectId(), ObjectId()
-        self.route = {'_id': self.route_id, 'import_id': 'test-import'}
+        self.route = {'_id': self.route_id}
         self.point = {
-            '_id': self.point_id, 'import_id': 'test-import', 'name': 'PE01',
+            '_id': self.point_id, 'name': 'PE01',
             'location': {'type': 'Point', 'coordinates': [-74.1, 4.6]},
         }
         self.repository.routes.documents[self.route_id] = self.route
@@ -90,25 +88,14 @@ class FirstMeetingPointTests(unittest.IsolatedAsyncioTestCase):
             await self.configure.execute(str(self.route_id), str(self.point_id))
         self.assertEqual(self.route['first_meeting_point_id'], original)
 
-    async def test_concurrent_route_change_is_rejected(self):
+    async def test_concurrent_association_change_is_rejected(self):
+        original = ObjectId()
         def concurrent_change():
-            self.route['import_id'] = 'changed-import'
+            self.route['first_meeting_point_id'] = original
         self.repository.routes.before_update = concurrent_change
         with self.assertRaises(AssociationConflict):
             await self.configure.execute(str(self.route_id), str(self.point_id))
-        self.assertNotIn('first_meeting_point_id', self.route)
-
-    async def test_cross_import_association_is_rejected(self):
-        self.point['import_id'] = 'other-import'
-        with self.assertRaises(AssociationConflict):
-            await self.configure.execute(str(self.route_id), str(self.point_id))
-        self.assertEqual(self.repository.routes.updates, 0)
-
-    async def test_cross_import_reference_is_rejected_on_read(self):
-        self.route['first_meeting_point_id'] = self.point_id
-        self.point['import_id'] = 'other-import'
-        with self.assertRaises(AssociationConflict):
-            await self.get.execute(str(self.route_id))
+        self.assertEqual(self.route['first_meeting_point_id'], original)
 
     async def test_missing_route(self):
         missing = str(ObjectId())

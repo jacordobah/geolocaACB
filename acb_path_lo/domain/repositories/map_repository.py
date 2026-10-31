@@ -20,7 +20,6 @@ class MapRepository(Protocol):
 
     async def save_import(
         self,
-        import_id: str,
         routes: list[Route],
         points: list[MeetingPoint],
         endpoints: list[RouteEndpoints],
@@ -28,14 +27,8 @@ class MapRepository(Protocol):
     ) -> None:
         ...
 
-    async def list_routes(
-        self,
-        import_id: str | None = None,
-    ) -> list[dict]:
+    async def list_routes(self) -> list[dict]:
         ...
 
-    async def list_meeting_points(
-        self,
-        import_id: str | None = None,
-    ) -> list[dict]:
+    async def list_meeting_points(self) -> list[dict]:
         ...

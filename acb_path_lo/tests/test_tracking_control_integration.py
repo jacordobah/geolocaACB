@@ -34,11 +34,10 @@ class TrackingControlIntegration(unittest.TestCase):
             raise RuntimeError("Disposable database must start empty")
         cls.route_id, cls.point_id = ObjectId(), ObjectId()
         cls.db.routes.insert_one({"_id": cls.route_id, "name": "synthetic route",
-            "import_id": "phase53-synthetic", "first_meeting_point_id": cls.point_id,
+            "first_meeting_point_id": cls.point_id,
             "geometry": {"type": "LineString", "coordinates": [[-74.0, 4.0], [-74.001, 4.001]]}})
         cls.db.meeting_points.insert_one({"_id": cls.point_id, "name": "PE01",
-            "import_id": "phase53-synthetic", "location": {"type": "Point",
-            "coordinates": [-74.0, 4.0]}})
+            "location": {"type": "Point", "coordinates": [-74.0, 4.0]}})
         cls.service, service_hash = generate_service_credential()
         issuance_key = secrets.token_urlsafe(32)
         cls.api_env = {**os.environ,
