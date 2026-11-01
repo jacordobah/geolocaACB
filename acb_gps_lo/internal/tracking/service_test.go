@@ -10,18 +10,41 @@ import (
 )
 
 type fakeRepository struct {
-	session   Session
-	digest    [32]byte
-	position  Position
-	expiry    time.Time
-	writes    int
-	acceptErr error
+	session           Session
+	digest            [32]byte
+	position          Position
+	expiry            time.Time
+	writes            int
+	acceptErr         error
+	provisionFailures int
+	provisionCalls    int
 }
 
 func (f *fakeRepository) Provision(_ context.Context, s Session, d [32]byte) error {
+	f.provisionCalls++
 	f.session = s
 	f.digest = d
+	if f.provisionFailures > 0 {
+		f.provisionFailures--
+		return ErrUncertain
+	}
 	return nil
+}
+
+func TestProvisionRetriesSameCredentialAfterUncertainWrite(t *testing.T) {
+	now := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
+	repo := &fakeRepository{provisionFailures: 1}
+	service, _ := NewService(repo, 15*time.Minute, 30*time.Second, func() time.Time { return now }, bytes.NewReader(bytes.Repeat([]byte{31}, 56)))
+	session, token, err := service.Provision(context.Background(), "guide", "trip", "route")
+	if err != nil || token == "" || repo.provisionCalls != 2 || session.ID != repo.session.ID {
+		t.Fatalf("reconciled provision %+v %d %v", session, repo.provisionCalls, err)
+	}
+	other := &fakeRepository{provisionFailures: 2}
+	service, _ = NewService(other, 15*time.Minute, 30*time.Second, func() time.Time { return now }, bytes.NewReader(bytes.Repeat([]byte{32}, 56)))
+	session, token, err = service.Provision(context.Background(), "guide", "trip", "route")
+	if !errors.Is(err, ErrUncertain) || token != "" || session.ID != "" || other.provisionCalls != 2 {
+		t.Fatalf("uncertain token leaked %+v %q %v", session, token, err)
+	}
 }
 func (f *fakeRepository) Credential(_ context.Context, id string) (Session, [32]byte, error) {
 	if id != f.session.ID || f.session.State != Active {

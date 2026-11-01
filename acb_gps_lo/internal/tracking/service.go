@@ -72,7 +72,13 @@ func (s *Service) Provision(ctx context.Context, guideID, tripID, routeID string
 		return Session{}, "", err
 	}
 	digest := sha256.Sum256(credential)
-	if err := s.repo.Provision(ctx, session, digest); err != nil {
+	err := s.repo.Provision(ctx, session, digest)
+	if errors.Is(err, ErrUncertain) && ctx.Err() == nil {
+		// Reconcile once with the same ID and digest. Repository creation is
+		// idempotent; a second confirmed result can safely release the token.
+		err = s.repo.Provision(ctx, session, digest)
+	}
+	if err != nil {
 		return Session{}, "", err
 	}
 	return session, base64.RawURLEncoding.EncodeToString(credential), nil

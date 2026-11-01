@@ -52,10 +52,16 @@ func (s *Store) CreateSession(ctx context.Context, session tracking.Session) err
 	}
 	result, err := createScript.Run(ctx, s.client, []string{sessionKey(session.ID), activeKey}, session.ID, session.GuideID, session.RouteID, session.TripID, ms(session.StartedAt), keyID(session.ID), "", "0", "0").Text()
 	if err != nil {
+		if ctx.Err() == nil {
+			confirmed, checkErr := s.confirmCreate(ctx, session, "")
+			if checkErr == nil && confirmed {
+				return nil
+			}
+		}
 		return fmt.Errorf("%w: create session: %v", tracking.ErrUncertain, err)
 	}
 	switch result {
-	case "CREATED":
+	case "CREATED", "REPAIRED", "EXISTING":
 		return nil
 	case "CONFLICT":
 		return tracking.ErrConflict
@@ -73,12 +79,19 @@ func (s *Store) Provision(ctx context.Context, session tracking.Session, digest 
 	if session.MaxObservationAge <= 0 || session.MaxObservationAge > 24*time.Hour || session.FutureSkew < 0 || session.FutureSkew > 5*time.Minute || session.MaxObservationAge%time.Millisecond != 0 || session.FutureSkew%time.Millisecond != 0 {
 		return tracking.ErrInvalid
 	}
-	result, err := createScript.Run(ctx, s.client, []string{sessionKey(session.ID), activeKey}, session.ID, session.GuideID, session.RouteID, session.TripID, ms(session.StartedAt), keyID(session.ID), hex.EncodeToString(digest[:]), session.MaxObservationAge.Milliseconds(), session.FutureSkew.Milliseconds()).Text()
+	digestHex := hex.EncodeToString(digest[:])
+	result, err := createScript.Run(ctx, s.client, []string{sessionKey(session.ID), activeKey}, session.ID, session.GuideID, session.RouteID, session.TripID, ms(session.StartedAt), keyID(session.ID), digestHex, session.MaxObservationAge.Milliseconds(), session.FutureSkew.Milliseconds()).Text()
 	if err != nil {
+		if ctx.Err() == nil {
+			confirmed, checkErr := s.confirmCreate(ctx, session, digestHex)
+			if checkErr == nil && confirmed {
+				return nil
+			}
+		}
 		return fmt.Errorf("%w: provision session: %v", tracking.ErrUncertain, err)
 	}
 	switch result {
-	case "CREATED":
+	case "CREATED", "REPAIRED", "EXISTING":
 		return nil
 	case "CONFLICT":
 		return tracking.ErrConflict
@@ -87,6 +100,29 @@ func (s *Store) Provision(ctx context.Context, session tracking.Session, digest 
 	default:
 		return fmt.Errorf("%w: provision state %s", tracking.ErrUnavailable, result)
 	}
+}
+
+// confirmCreate is used only after a transport/Redis error. It never infers
+// success from one key: the full session and active index must agree.
+func (s *Store) confirmCreate(ctx context.Context, session tracking.Session, digestHex string) (bool, error) {
+	pipe := s.client.Pipeline()
+	fields := pipe.HGetAll(ctx, sessionKey(session.ID))
+	score := pipe.ZScore(ctx, activeKey, keyID(session.ID))
+	_, err := pipe.Exec(ctx)
+	if err != nil && !errors.Is(err, redis.Nil) {
+		return false, err
+	}
+	if fields.Err() != nil || score.Err() != nil {
+		return false, nil
+	}
+	f := fields.Val()
+	if f["id"] != session.ID || f["guide_id"] != session.GuideID || f["route_id"] != session.RouteID || f["trip_id"] != session.TripID || f["started_ms"] != ms(session.StartedAt) || f["credential_hash"] != digestHex || f["state"] != "active" || f["provision_complete"] != "1" {
+		return false, nil
+	}
+	if digestHex != "" && (f["max_age_ms"] != strconv.FormatInt(session.MaxObservationAge.Milliseconds(), 10) || f["future_skew_ms"] != strconv.FormatInt(session.FutureSkew.Milliseconds(), 10)) {
+		return false, nil
+	}
+	return score.Val() == float64(session.StartedAt.UTC().UnixMilli()), nil
 }
 
 // Credential loads the session policy and digest for an internal verifier.
@@ -103,12 +139,28 @@ func (s *Store) Credential(ctx context.Context, id string) (tracking.Session, [3
 	if len(fields) == 0 {
 		return tracking.Session{}, digest, tracking.ErrNotFound
 	}
+	if fields["state"] == "provisioning" || fields["provision_complete"] == "0" {
+		return tracking.Session{}, digest, tracking.ErrNotFound
+	}
 	session, err := decodeSession(fields)
 	if err != nil {
 		return tracking.Session{}, digest, err
 	}
 	if session.ID != id || session.State != tracking.Active || fields["credential_hash"] == "" {
 		return tracking.Session{}, digest, tracking.ErrNotFound
+	}
+	if fields["provision_complete"] == "0" {
+		return tracking.Session{}, digest, tracking.ErrNotFound
+	}
+	indexScore, err := s.client.ZScore(ctx, activeKey, keyID(id)).Result()
+	if errors.Is(err, redis.Nil) {
+		return tracking.Session{}, digest, tracking.ErrUnavailable
+	}
+	if err != nil {
+		return tracking.Session{}, digest, storeErr(err)
+	}
+	if indexScore != float64(session.StartedAt.UTC().UnixMilli()) {
+		return tracking.Session{}, digest, tracking.ErrUnavailable
 	}
 	if session.MaxObservationAge <= 0 || session.MaxObservationAge > 24*time.Hour || session.FutureSkew < 0 || session.FutureSkew > 5*time.Minute {
 		return tracking.Session{}, digest, tracking.ErrUnavailable
@@ -212,7 +264,7 @@ func (s *Store) Accept(ctx context.Context, position tracking.Position) (Accepta
 		arrival = string(b)
 	}
 	keys := []string{sessionKey(position.SessionID), positionKey(position.SessionID, position.Sequence), historyKey(position.SessionID), activeKey}
-	result, err := acceptScript.Run(ctx, s.client, keys, position.Sequence, ms(position.CapturedAt), ms(position.ReceivedAt), s.retention.Milliseconds(), s.margin.Milliseconds(), fingerprint, fingerprint+"|"+string(body), arrival).Text()
+	result, err := acceptScript.Run(ctx, s.client, keys, position.Sequence, ms(position.CapturedAt), ms(position.ReceivedAt), s.retention.Milliseconds(), s.margin.Milliseconds(), fingerprint, fingerprint+"|"+string(body), arrival, keyID(position.SessionID)).Text()
 	if err != nil {
 		// A broken connection may hide a committed write. Never report success
 		// unless all three durable Redis structures agree and no repair is pending.
@@ -453,15 +505,30 @@ func (s *Store) ActiveSessions(ctx context.Context, after int64, limit int64) ([
 	if after < 0 || limit < 1 || limit > 100 {
 		return nil, tracking.ErrInvalid
 	}
-	ids, err := s.client.ZRange(ctx, activeKey, after, after+limit-1).Result()
+	ids, err := s.client.ZRangeWithScores(ctx, activeKey, after, after+limit-1).Result()
 	if err != nil {
 		return nil, storeErr(err)
 	}
 	result := make([]string, 0, len(ids))
-	for _, id := range ids {
-		b, err := base64.RawURLEncoding.DecodeString(id)
+	for _, entry := range ids {
+		member, ok := entry.Member.(string)
+		if !ok {
+			return nil, tracking.ErrUnavailable
+		}
+		b, err := base64.RawURLEncoding.DecodeString(member)
 		if err != nil {
 			return nil, storeErr(err)
+		}
+		fields, err := s.client.HMGet(ctx, sessionKey(string(b)), "state", "provision_complete", "started_ms").Result()
+		if err != nil {
+			return nil, storeErr(err)
+		}
+		if len(fields) != 3 || fields[0] != "active" || fields[1] == "0" {
+			continue
+		}
+		started, err := strconv.ParseInt(fmt.Sprint(fields[2]), 10, 64)
+		if err != nil || float64(started) != entry.Score {
+			continue
 		}
 		result = append(result, string(b))
 	}

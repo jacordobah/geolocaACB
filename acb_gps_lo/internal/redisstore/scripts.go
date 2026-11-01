@@ -14,14 +14,16 @@ if redis.call('TYPE', session).ok ~= 'hash' then return 'MISSING' end
 if redis.call('TYPE', position).ok ~= 'none' and redis.call('TYPE', position).ok ~= 'string' then return 'CORRUPT' end
 if redis.call('TYPE', history).ok ~= 'none' and redis.call('TYPE', history).ok ~= 'zset' then return 'CORRUPT' end
 if redis.call('TYPE', active).ok ~= 'none' and redis.call('TYPE', active).ok ~= 'zset' then return 'CORRUPT' end
-local fields = redis.call('HMGET', session, 'state', 'last_sequence', 'last_captured_ms', 'pending_sequence', 'pending_fingerprint', 'first_arrival', 'max_expiry_ms')
-local state, last, lastCaptured, pending, pendingHash, first, maxExpiry = fields[1], tonumber(fields[2]), tonumber(fields[3]), tonumber(fields[4]), fields[5], fields[6], tonumber(fields[7])
+local fields = redis.call('HMGET', session, 'state', 'last_sequence', 'last_captured_ms', 'pending_sequence', 'pending_fingerprint', 'first_arrival', 'max_expiry_ms', 'started_ms')
+local state, last, lastCaptured, pending, pendingHash, first, maxExpiry, started = fields[1], tonumber(fields[2]), tonumber(fields[3]), tonumber(fields[4]), fields[5], fields[6], tonumber(fields[7]), tonumber(fields[8])
 if not last or last < 0 or (last > 0 and not lastCaptured) or (pending and not pendingHash) then return 'CORRUPT' end
 local existing = redis.call('GET', position)
 if existing and string.sub(existing, 1, 64) ~= fingerprint then return 'CONFLICT' end
 if existing and not pending and seq <= last then return 'DUPLICATE' end
 if pending and (pending ~= seq or pendingHash ~= fingerprint) then return 'PENDING' end
 if state ~= 'active' then return 'CLOSED' end
+local activeScore = redis.call('ZSCORE', active, ARGV[9])
+if not started or not activeScore or tonumber(activeScore) ~= started then return 'PENDING' end
 if not pending and (seq <= last or (lastCaptured and captured < lastCaptured)) then return 'STALE' end
 if existing and not pending then return 'CORRUPT' end
 local oldScore = redis.call('ZSCORE', history, ARGV[1])
@@ -45,16 +47,37 @@ return 'ACCEPTED'
 `)
 
 var createScript = redis.NewScript(`
-if redis.call('TYPE', KEYS[1]).ok ~= 'none' then return 'CONFLICT' end
-if redis.call('TYPE', KEYS[2]).ok ~= 'none' and redis.call('TYPE', KEYS[2]).ok ~= 'zset' then return 'CORRUPT' end
+local session, active = KEYS[1], KEYS[2]
+local kind = redis.call('TYPE', session).ok
+if kind ~= 'none' and kind ~= 'hash' then return 'CORRUPT' end
+local indexKind = redis.call('TYPE', active).ok
+if indexKind ~= 'none' and indexKind ~= 'zset' then return 'CORRUPT' end
 if ARGV[7] ~= '' and (string.len(ARGV[7]) ~= 64 or not tonumber(ARGV[8]) or tonumber(ARGV[8]) < 1 or not tonumber(ARGV[9]) or tonumber(ARGV[9]) < 0) then return 'INVALID' end
-if ARGV[7] ~= '' then
-  redis.call('HSET', KEYS[1], 'id', ARGV[1], 'guide_id', ARGV[2], 'route_id', ARGV[3], 'trip_id', ARGV[4], 'state', 'active', 'started_ms', ARGV[5], 'last_sequence', '0', 'credential_hash', ARGV[7], 'max_age_ms', ARGV[8], 'future_skew_ms', ARGV[9])
+if kind == 'none' then
+  -- A failed later write leaves this record unusable until an identical retry.
+  if ARGV[7] ~= '' then
+    redis.call('HSET', session, 'id', ARGV[1], 'guide_id', ARGV[2], 'route_id', ARGV[3], 'trip_id', ARGV[4], 'state', 'provisioning', 'started_ms', ARGV[5], 'last_sequence', '0', 'credential_hash', ARGV[7], 'max_age_ms', ARGV[8], 'future_skew_ms', ARGV[9], 'provision_complete', '0')
+  else
+    redis.call('HSET', session, 'id', ARGV[1], 'guide_id', ARGV[2], 'route_id', ARGV[3], 'trip_id', ARGV[4], 'state', 'provisioning', 'started_ms', ARGV[5], 'last_sequence', '0', 'provision_complete', '0')
+  end
 else
-  redis.call('HSET', KEYS[1], 'id', ARGV[1], 'guide_id', ARGV[2], 'route_id', ARGV[3], 'trip_id', ARGV[4], 'state', 'active', 'started_ms', ARGV[5], 'last_sequence', '0')
+  local fields = redis.call('HMGET', session, 'id', 'guide_id', 'route_id', 'trip_id', 'started_ms', 'credential_hash', 'max_age_ms', 'future_skew_ms', 'state', 'last_sequence', 'provision_complete')
+  if fields[1] ~= ARGV[1] or fields[2] ~= ARGV[2] or fields[3] ~= ARGV[3] or fields[4] ~= ARGV[4] or fields[5] ~= ARGV[5] or (fields[6] or '') ~= ARGV[7] then return 'CONFLICT' end
+  if ARGV[7] ~= '' and (fields[7] ~= ARGV[8] or fields[8] ~= ARGV[9]) then return 'CONFLICT' end
+  if fields[9] ~= 'provisioning' and fields[9] ~= 'active' then return 'CONFLICT' end
+  if fields[9] == 'provisioning' and fields[10] ~= '0' then return 'CORRUPT' end
+  local score = redis.call('ZSCORE', active, ARGV[6])
+  if fields[9] == 'active' and score and tonumber(score) == tonumber(ARGV[5]) then
+    if fields[11] == '1' then return 'EXISTING' end
+    -- Existing pre-upgrade sessions had no completion marker.
+    if fields[11] == false then return 'EXISTING' end
+  end
+  if fields[9] == 'active' then redis.call('HSET', session, 'state', 'provisioning', 'provision_complete', '0') end
 end
-redis.call('ZADD', KEYS[2], ARGV[5], ARGV[6])
-return 'CREATED'
+redis.call('ZADD', active, tonumber(ARGV[5]), ARGV[6])
+redis.call('HSET', session, 'state', 'active', 'provision_complete', '1')
+if kind == 'none' then return 'CREATED' end
+return 'REPAIRED'
 `)
 
 var finishScript = redis.NewScript(`
