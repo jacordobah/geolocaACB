@@ -47,7 +47,12 @@ return 'ACCEPTED'
 var createScript = redis.NewScript(`
 if redis.call('TYPE', KEYS[1]).ok ~= 'none' then return 'CONFLICT' end
 if redis.call('TYPE', KEYS[2]).ok ~= 'none' and redis.call('TYPE', KEYS[2]).ok ~= 'zset' then return 'CORRUPT' end
-redis.call('HSET', KEYS[1], 'id', ARGV[1], 'guide_id', ARGV[2], 'route_id', ARGV[3], 'trip_id', ARGV[4], 'state', 'active', 'started_ms', ARGV[5], 'last_sequence', '0')
+if ARGV[7] ~= '' and (string.len(ARGV[7]) ~= 64 or not tonumber(ARGV[8]) or tonumber(ARGV[8]) < 1 or not tonumber(ARGV[9]) or tonumber(ARGV[9]) < 0) then return 'INVALID' end
+if ARGV[7] ~= '' then
+  redis.call('HSET', KEYS[1], 'id', ARGV[1], 'guide_id', ARGV[2], 'route_id', ARGV[3], 'trip_id', ARGV[4], 'state', 'active', 'started_ms', ARGV[5], 'last_sequence', '0', 'credential_hash', ARGV[7], 'max_age_ms', ARGV[8], 'future_skew_ms', ARGV[9])
+else
+  redis.call('HSET', KEYS[1], 'id', ARGV[1], 'guide_id', ARGV[2], 'route_id', ARGV[3], 'trip_id', ARGV[4], 'state', 'active', 'started_ms', ARGV[5], 'last_sequence', '0')
+end
 redis.call('ZADD', KEYS[2], ARGV[5], ARGV[6])
 return 'CREATED'
 `)
@@ -63,6 +68,7 @@ local now = redis.call('TIME')
 local redisMs = tonumber(now[1]) * 1000 + math.floor(tonumber(now[2]) / 1000)
 local expiry = math.max(tonumber(fields[4]) or 0, redisMs + 86400000)
 if fields[1] == 'active' then redis.call('HSET', KEYS[1], 'state', 'finished', 'finished_ms', ARGV[1]) end
+redis.call('HDEL', KEYS[1], 'credential_hash')
 redis.call('ZREM', KEYS[2], ARGV[2])
 redis.call('PEXPIREAT', KEYS[1], string.format('%.0f', expiry))
 redis.call('PEXPIREAT', KEYS[3], string.format('%.0f', expiry))

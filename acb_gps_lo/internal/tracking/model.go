@@ -12,14 +12,15 @@ import (
 )
 
 var (
-	ErrInvalid     = errors.New("invalid tracking data")
-	ErrNotFound    = errors.New("tracking session not found")
-	ErrConflict    = errors.New("observation sequence conflict")
-	ErrStale       = errors.New("old or out-of-order observation")
-	ErrClosed      = errors.New("tracking session closed")
-	ErrPending     = errors.New("tracking write requires reconciliation")
-	ErrUnavailable = errors.New("tracking store unavailable")
-	ErrUncertain   = errors.New("tracking write outcome uncertain")
+	ErrInvalid      = errors.New("invalid tracking data")
+	ErrNotFound     = errors.New("tracking session not found")
+	ErrConflict     = errors.New("observation sequence conflict")
+	ErrStale        = errors.New("old or out-of-order observation")
+	ErrClosed       = errors.New("tracking session closed")
+	ErrPending      = errors.New("tracking write requires reconciliation")
+	ErrUnavailable  = errors.New("tracking store unavailable")
+	ErrUncertain    = errors.New("tracking write outcome uncertain")
+	ErrUnauthorized = errors.New("tracking credential not authorized")
 )
 
 const MinRetention = 24 * time.Hour
@@ -33,16 +34,18 @@ const (
 
 // External identifiers are opaque to GPS. They are encoded only in Redis keys.
 type Session struct {
-	ID             string     `json:"id"`
-	GuideID        string     `json:"guide_id"`
-	RouteID        string     `json:"route_id"`
-	TripID         string     `json:"trip_id"`
-	State          State      `json:"state"`
-	StartedAt      time.Time  `json:"started_at"`
-	FinishedAt     *time.Time `json:"finished_at,omitempty"`
-	LastSequence   int64      `json:"last_sequence"`
-	LastCapturedAt *time.Time `json:"last_captured_at,omitempty"`
-	FirstArrival   *Arrival   `json:"first_arrival,omitempty"`
+	ID                string        `json:"id"`
+	GuideID           string        `json:"guide_id"`
+	RouteID           string        `json:"route_id"`
+	TripID            string        `json:"trip_id"`
+	State             State         `json:"state"`
+	StartedAt         time.Time     `json:"started_at"`
+	FinishedAt        *time.Time    `json:"finished_at,omitempty"`
+	LastSequence      int64         `json:"last_sequence"`
+	LastCapturedAt    *time.Time    `json:"last_captured_at,omitempty"`
+	FirstArrival      *Arrival      `json:"first_arrival,omitempty"`
+	MaxObservationAge time.Duration `json:"max_observation_age"`
+	FutureSkew        time.Duration `json:"future_skew"`
 }
 
 type Arrival struct {
@@ -68,6 +71,21 @@ type Position struct {
 	AccuracyMeters *float64          `json:"accuracy_meters,omitempty"`
 	Geographic     *GeographicResult `json:"geographic,omitempty"`
 	FirstArrival   *Arrival          `json:"first_arrival,omitempty"`
+	// Version 1 omits server ReceivedAt from the fingerprint, so HTTP retries
+	// remain idempotent. Version 0 preserves older stored fingerprints.
+	IdempotencyVersion int `json:"idempotency_version,omitempty"`
+}
+
+type Acceptance struct {
+	Position  Position
+	Duplicate bool
+	ExpiresAt time.Time
+}
+
+type Page struct {
+	Positions    []Position
+	NextSequence int64
+	HasMore      bool
 }
 
 func validID(id string) bool {
@@ -96,7 +114,7 @@ func (s Session) ValidateNew() error {
 }
 
 func (p Position) Validate() error {
-	if !validID(p.SessionID) || p.Sequence < 1 || p.Sequence > 1<<53 || !validTime(p.CapturedAt) || !validTime(p.ReceivedAt) || p.CapturedAt.After(p.ReceivedAt.Add(5*time.Minute)) || math.IsNaN(p.Longitude) || math.IsInf(p.Longitude, 0) || math.IsNaN(p.Latitude) || math.IsInf(p.Latitude, 0) || p.Longitude < -180 || p.Longitude > 180 || p.Latitude < -90 || p.Latitude > 90 {
+	if !validID(p.SessionID) || p.Sequence < 1 || p.Sequence > 1<<53 || !validTime(p.CapturedAt) || !validTime(p.ReceivedAt) || p.CapturedAt.After(p.ReceivedAt.Add(5*time.Minute)) || p.IdempotencyVersion < 0 || p.IdempotencyVersion > 1 || math.IsNaN(p.Longitude) || math.IsInf(p.Longitude, 0) || math.IsNaN(p.Latitude) || math.IsInf(p.Latitude, 0) || p.Longitude < -180 || p.Longitude > 180 || p.Latitude < -90 || p.Latitude > 90 {
 		return fmt.Errorf("%w: position", ErrInvalid)
 	}
 	if p.AccuracyMeters != nil && (!finiteNonnegative(*p.AccuracyMeters)) {
@@ -116,8 +134,8 @@ func (p Position) Validate() error {
 
 func finiteNonnegative(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) && v >= 0 }
 
-// Fingerprint hashes canonical JSON after validation. ReceivedAt is included:
-// a retry must replay the original observation, not silently change its data.
+// Fingerprint hashes canonical JSON after validation. Version 0 requires
+// exact replay; version 1 excludes the server-generated ReceivedAt.
 func (p Position) Fingerprint() (string, []byte, error) {
 	if err := p.Validate(); err != nil {
 		return "", nil, err
@@ -126,8 +144,17 @@ func (p Position) Fingerprint() (string, []byte, error) {
 	if err != nil {
 		return "", nil, err
 	}
+	if p.IdempotencyVersion == 1 {
+		stable := p
+		stable.ReceivedAt = time.Time{}
+		b, err = json.Marshal(stable)
+		if err != nil {
+			return "", nil, err
+		}
+	}
 	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:]), b, nil
+	body, err := json.Marshal(p)
+	return hex.EncodeToString(sum[:]), body, err
 }
 
 func Expiration(captured, received, redisNow time.Time, retention, margin time.Duration) (time.Time, error) {

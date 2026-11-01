@@ -16,7 +16,14 @@ type Pinger interface {
 }
 
 func Handler(redis Pinger, pingTimeout time.Duration, logger *slog.Logger) http.Handler {
+	return HandlerWithTracking(redis, pingTimeout, logger, nil)
+}
+
+func HandlerWithTracking(redis Pinger, pingTimeout time.Duration, logger *slog.Logger, observations http.Handler) http.Handler {
 	mux := http.NewServeMux()
+	if observations != nil {
+		mux.Handle("POST /api/v1/tracking-sessions/{tracking_id}/observations", observations)
+	}
 	mux.HandleFunc("GET /health/live", func(w http.ResponseWriter, _ *http.Request) {
 		respond(w, http.StatusOK, map[string]string{"status": "alive"})
 	})

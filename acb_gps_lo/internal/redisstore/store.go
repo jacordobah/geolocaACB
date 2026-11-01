@@ -3,6 +3,7 @@ package redisstore
 import (
 	"context"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -49,7 +50,7 @@ func (s *Store) CreateSession(ctx context.Context, session tracking.Session) err
 	if err := session.ValidateNew(); err != nil {
 		return err
 	}
-	result, err := createScript.Run(ctx, s.client, []string{sessionKey(session.ID), activeKey}, session.ID, session.GuideID, session.RouteID, session.TripID, ms(session.StartedAt), keyID(session.ID)).Text()
+	result, err := createScript.Run(ctx, s.client, []string{sessionKey(session.ID), activeKey}, session.ID, session.GuideID, session.RouteID, session.TripID, ms(session.StartedAt), keyID(session.ID), "", "0", "0").Text()
 	if err != nil {
 		return fmt.Errorf("%w: create session: %v", tracking.ErrUncertain, err)
 	}
@@ -61,6 +62,63 @@ func (s *Store) CreateSession(ctx context.Context, session tracking.Session) err
 	default:
 		return fmt.Errorf("%w: create session %s", tracking.ErrUnavailable, result)
 	}
+}
+
+// Provision stores only a SHA-256 credential digest in the session hash.
+// The caller owns token generation and must return it only on confirmed creation.
+func (s *Store) Provision(ctx context.Context, session tracking.Session, digest [32]byte) error {
+	if err := session.ValidateNew(); err != nil {
+		return err
+	}
+	if session.MaxObservationAge <= 0 || session.MaxObservationAge > 24*time.Hour || session.FutureSkew < 0 || session.FutureSkew > 5*time.Minute || session.MaxObservationAge%time.Millisecond != 0 || session.FutureSkew%time.Millisecond != 0 {
+		return tracking.ErrInvalid
+	}
+	result, err := createScript.Run(ctx, s.client, []string{sessionKey(session.ID), activeKey}, session.ID, session.GuideID, session.RouteID, session.TripID, ms(session.StartedAt), keyID(session.ID), hex.EncodeToString(digest[:]), session.MaxObservationAge.Milliseconds(), session.FutureSkew.Milliseconds()).Text()
+	if err != nil {
+		return fmt.Errorf("%w: provision session: %v", tracking.ErrUncertain, err)
+	}
+	switch result {
+	case "CREATED":
+		return nil
+	case "CONFLICT":
+		return tracking.ErrConflict
+	case "INVALID":
+		return tracking.ErrInvalid
+	default:
+		return fmt.Errorf("%w: provision state %s", tracking.ErrUnavailable, result)
+	}
+}
+
+// Credential loads the session policy and digest for an internal verifier.
+// Missing, closed and legacy sessions deliberately have no usable credential.
+func (s *Store) Credential(ctx context.Context, id string) (tracking.Session, [32]byte, error) {
+	var digest [32]byte
+	if !validID(id) {
+		return tracking.Session{}, digest, tracking.ErrInvalid
+	}
+	fields, err := s.client.HGetAll(ctx, sessionKey(id)).Result()
+	if err != nil {
+		return tracking.Session{}, digest, storeErr(err)
+	}
+	if len(fields) == 0 {
+		return tracking.Session{}, digest, tracking.ErrNotFound
+	}
+	session, err := decodeSession(fields)
+	if err != nil {
+		return tracking.Session{}, digest, err
+	}
+	if session.ID != id || session.State != tracking.Active || fields["credential_hash"] == "" {
+		return tracking.Session{}, digest, tracking.ErrNotFound
+	}
+	if session.MaxObservationAge <= 0 || session.MaxObservationAge > 24*time.Hour || session.FutureSkew < 0 || session.FutureSkew > 5*time.Minute {
+		return tracking.Session{}, digest, tracking.ErrUnavailable
+	}
+	b, err := hex.DecodeString(fields["credential_hash"])
+	if err != nil || len(b) != 32 {
+		return tracking.Session{}, digest, tracking.ErrUnavailable
+	}
+	copy(digest[:], b)
+	return session, digest, nil
 }
 
 func (s *Store) Session(ctx context.Context, id string) (tracking.Session, error) {
@@ -117,13 +175,24 @@ func decodeSession(fields map[string]string) (tracking.Session, error) {
 		}
 		result.FirstArrival = &arrival
 	}
+	if raw := fields["max_age_ms"]; raw != "" {
+		value, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || value <= 0 {
+			return result, tracking.ErrUnavailable
+		}
+		result.MaxObservationAge = time.Duration(value) * time.Millisecond
+	}
+	if raw := fields["future_skew_ms"]; raw != "" {
+		value, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || value < 0 {
+			return result, tracking.ErrUnavailable
+		}
+		result.FutureSkew = time.Duration(value) * time.Millisecond
+	}
 	return result, nil
 }
 
-type Acceptance struct {
-	Position  tracking.Position
-	Duplicate bool
-}
+type Acceptance = tracking.Acceptance
 
 func (s *Store) Accept(ctx context.Context, position tracking.Position) (Acceptance, error) {
 	fingerprint, body, err := position.Fingerprint()
@@ -150,20 +219,34 @@ func (s *Store) Accept(ctx context.Context, position tracking.Position) (Accepta
 		if ctx.Err() == nil {
 			confirmed, checkErr := s.confirm(ctx, position, fingerprint)
 			if checkErr == nil && confirmed {
-				return Acceptance{Position: position, Duplicate: true}, nil
+				stored, readErr := s.ReadPosition(ctx, position.SessionID, position.Sequence)
+				if readErr == nil {
+					expiry, expiryErr := s.PositionExpiry(ctx, position.SessionID, position.Sequence)
+					if expiryErr == nil {
+						return Acceptance{Position: stored, Duplicate: true, ExpiresAt: expiry}, nil
+					}
+				}
 			}
 		}
 		return Acceptance{}, fmt.Errorf("%w: accept observation: %v", tracking.ErrUncertain, err)
 	}
 	switch result {
 	case "ACCEPTED":
-		return Acceptance{Position: position}, nil
+		expiry, err := s.PositionExpiry(ctx, position.SessionID, position.Sequence)
+		if err != nil {
+			return Acceptance{}, fmt.Errorf("%w: position expiry cannot be verified", tracking.ErrUncertain)
+		}
+		return Acceptance{Position: position, ExpiresAt: expiry}, nil
 	case "DUPLICATE":
 		stored, err := s.position(ctx, position.SessionID, position.Sequence)
 		if err != nil {
 			return Acceptance{}, err
 		}
-		return Acceptance{Position: stored, Duplicate: true}, nil
+		expiry, err := s.PositionExpiry(ctx, position.SessionID, position.Sequence)
+		if err != nil {
+			return Acceptance{}, fmt.Errorf("%w: position expiry cannot be verified", tracking.ErrUncertain)
+		}
+		return Acceptance{Position: stored, Duplicate: true, ExpiresAt: expiry}, nil
 	case "CONFLICT":
 		return Acceptance{}, tracking.ErrConflict
 	case "STALE":
@@ -179,6 +262,27 @@ func (s *Store) Accept(ctx context.Context, position tracking.Position) (Accepta
 	default:
 		return Acceptance{}, fmt.Errorf("%w: acceptance state %s", tracking.ErrUnavailable, result)
 	}
+}
+
+func (s *Store) ReadPosition(ctx context.Context, id string, seq int64) (tracking.Position, error) {
+	if !validID(id) || seq < 1 {
+		return tracking.Position{}, tracking.ErrInvalid
+	}
+	return s.position(ctx, id, seq)
+}
+
+func (s *Store) PositionExpiry(ctx context.Context, id string, seq int64) (time.Time, error) {
+	if !validID(id) || seq < 1 {
+		return time.Time{}, tracking.ErrInvalid
+	}
+	value, err := s.client.PExpireTime(ctx, positionKey(id, seq)).Result()
+	if err != nil {
+		return time.Time{}, storeErr(err)
+	}
+	if value <= 0 {
+		return time.Time{}, tracking.ErrUnavailable
+	}
+	return time.UnixMilli(int64(value / time.Millisecond)).UTC(), nil
 }
 
 func (s *Store) confirm(ctx context.Context, p tracking.Position, fingerprint string) (bool, error) {
@@ -286,11 +390,7 @@ func (s *Store) Latest(ctx context.Context, id string) (tracking.Position, error
 	return tracking.Position{}, tracking.ErrNotFound
 }
 
-type Page struct {
-	Positions    []tracking.Position
-	NextSequence int64
-	HasMore      bool
-}
+type Page = tracking.Page
 
 // History scans at most four index entries per requested result. The caller
 // resumes after NextSequence; missing positions are pruned only as encountered.

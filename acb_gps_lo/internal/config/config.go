@@ -11,16 +11,20 @@ import (
 )
 
 type Config struct {
-	HTTPPort              int
-	RedisAddr             string
-	RedisDialTimeout      time.Duration
-	RedisPingTimeout      time.Duration
-	ShutdownTimeout       time.Duration
-	PathsBaseURL          string
-	PathsHTTPTimeout      time.Duration
-	PathsMaxResponseBytes int64
-	GPSRetention          time.Duration
-	GPSSafetyMargin       time.Duration
+	HTTPPort               int
+	RedisAddr              string
+	RedisDialTimeout       time.Duration
+	RedisPingTimeout       time.Duration
+	ShutdownTimeout        time.Duration
+	PathsBaseURL           string
+	PathsHTTPTimeout       time.Duration
+	PathsMaxResponseBytes  int64
+	GPSRetention           time.Duration
+	GPSSafetyMargin        time.Duration
+	GPSMaxObservationAge   time.Duration
+	GPSFutureSkew          time.Duration
+	GPSMaxObservationBytes int64
+	GPSRequestTimeout      time.Duration
 }
 
 func Load() (Config, error) {
@@ -90,6 +94,26 @@ func Parse(lookup func(string) (string, bool)) (Config, error) {
 	cfg.GPSSafetyMargin, err = nonnegativeDuration(lookup, "GPS_POSITION_SAFETY_MARGIN", "5m")
 	if err != nil || cfg.GPSSafetyMargin > 24*time.Hour {
 		return Config{}, fmt.Errorf("GPS_POSITION_SAFETY_MARGIN must be between 0s and 24h")
+	}
+	cfg.GPSMaxObservationAge, err = duration(lookup, "GPS_MAX_OBSERVATION_AGE", "15m")
+	if err != nil || cfg.GPSMaxObservationAge > 24*time.Hour || cfg.GPSMaxObservationAge%time.Millisecond != 0 {
+		return Config{}, fmt.Errorf("GPS_MAX_OBSERVATION_AGE must be between 1ms and 24h")
+	}
+	cfg.GPSFutureSkew, err = nonnegativeDuration(lookup, "GPS_FUTURE_SKEW", "30s")
+	if err != nil || cfg.GPSFutureSkew > 5*time.Minute || cfg.GPSFutureSkew%time.Millisecond != 0 {
+		return Config{}, fmt.Errorf("GPS_FUTURE_SKEW must be between 0s and 5m")
+	}
+	bytes, err := value(lookup, "GPS_MAX_OBSERVATION_BYTES", "4096")
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.GPSMaxObservationBytes, err = strconv.ParseInt(bytes, 10, 64)
+	if err != nil || cfg.GPSMaxObservationBytes < 128 || cfg.GPSMaxObservationBytes > 65536 {
+		return Config{}, fmt.Errorf("GPS_MAX_OBSERVATION_BYTES must be between 128 and 65536")
+	}
+	cfg.GPSRequestTimeout, err = duration(lookup, "GPS_REQUEST_TIMEOUT", "5s")
+	if err != nil || cfg.GPSRequestTimeout > 30*time.Second {
+		return Config{}, fmt.Errorf("GPS_REQUEST_TIMEOUT must be between 1ns and 30s")
 	}
 	return cfg, nil
 }

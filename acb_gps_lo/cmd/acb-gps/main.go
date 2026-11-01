@@ -12,7 +12,10 @@ import (
 	"time"
 
 	"github.com/jacordobah/geolocaACB/ACB_GPS_Lo/internal/config"
+	"github.com/jacordobah/geolocaACB/ACB_GPS_Lo/internal/httpapi"
+	"github.com/jacordobah/geolocaACB/ACB_GPS_Lo/internal/redisstore"
 	"github.com/jacordobah/geolocaACB/ACB_GPS_Lo/internal/server"
+	"github.com/jacordobah/geolocaACB/ACB_GPS_Lo/internal/tracking"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -54,6 +57,18 @@ func run(logger *slog.Logger, args []string) error {
 		ReadTimeout: cfg.RedisPingTimeout, WriteTimeout: cfg.RedisPingTimeout,
 	})
 	defer client.Close()
+	store, err := redisstore.New(client, cfg.GPSRetention, cfg.GPSSafetyMargin)
+	if err != nil {
+		return err
+	}
+	tracker, err := tracking.NewService(store, cfg.GPSMaxObservationAge, cfg.GPSFutureSkew, nil, nil)
+	if err != nil {
+		return err
+	}
+	observations, err := httpapi.NewObservations(tracker, cfg.GPSMaxObservationBytes, cfg.GPSRequestTimeout)
+	if err != nil {
+		return err
+	}
 	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", cfg.HTTPPort))
 	if err != nil {
 		return fmt.Errorf("listen HTTP: %w", err)
@@ -62,7 +77,7 @@ func run(logger *slog.Logger, args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	logger.Info("HTTP server started", "port", cfg.HTTPPort)
-	err = server.Serve(ctx, listener, server.Handler(redisHealth{client}, cfg.RedisPingTimeout, logger), cfg.ShutdownTimeout)
+	err = server.Serve(ctx, listener, server.HandlerWithTracking(redisHealth{client}, cfg.RedisPingTimeout, logger, observations), cfg.ShutdownTimeout)
 	if err == nil {
 		logger.Info("HTTP server stopped")
 	}

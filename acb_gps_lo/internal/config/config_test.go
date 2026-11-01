@@ -23,7 +23,7 @@ func TestParseDefaultsAndOverrides(t *testing.T) {
 		defaults.RedisPingTimeout != time.Second ||
 		defaults.ShutdownTimeout != 20*time.Second ||
 		defaults.PathsBaseURL != "" || defaults.PathsHTTPTimeout != 3*time.Second ||
-		defaults.PathsMaxResponseBytes != 2<<20 || defaults.GPSRetention != 24*time.Hour || defaults.GPSSafetyMargin != 5*time.Minute {
+		defaults.PathsMaxResponseBytes != 2<<20 || defaults.GPSRetention != 24*time.Hour || defaults.GPSSafetyMargin != 5*time.Minute || defaults.GPSMaxObservationAge != 15*time.Minute || defaults.GPSFutureSkew != 30*time.Second || defaults.GPSMaxObservationBytes != 4096 || defaults.GPSRequestTimeout != 5*time.Second {
 		t.Fatalf("unexpected defaults: %+v", defaults)
 	}
 
@@ -70,6 +70,10 @@ func TestParseRejectsInvalidValues(t *testing.T) {
 		{"huge response limit", "GPS_PATHS_MAX_RESPONSE_BYTES", "67108865"},
 		{"short retention", "GPS_POSITION_RETENTION", "23h"},
 		{"negative safety margin", "GPS_POSITION_SAFETY_MARGIN", "-1s"},
+		{"zero observation age", "GPS_MAX_OBSERVATION_AGE", "0s"},
+		{"large future skew", "GPS_FUTURE_SKEW", "6m"},
+		{"short body limit", "GPS_MAX_OBSERVATION_BYTES", "16"},
+		{"zero request timeout", "GPS_REQUEST_TIMEOUT", "0s"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
