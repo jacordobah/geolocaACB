@@ -25,12 +25,75 @@ func testStore(t *testing.T) (*Store, *redis.Client) {
 	if err := client.Ping(context.Background()).Err(); err != nil {
 		t.Fatal(err)
 	}
+	if os.Getenv("GPS_TEST_REDIS_ISOLATED") == "1" {
+		if err := client.FlushDB(context.Background()).Err(); err != nil {
+			t.Fatal(err)
+		}
+	}
 	t.Cleanup(func() { _ = client.Close() })
 	store, err := New(client, 24*time.Hour, 5*time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return store, client
+}
+
+func TestHistorySkipsExpiredReferencesAndGaps(t *testing.T) {
+	s, client := testStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	id := fmt.Sprintf("test-read-expiry-%d", now.UnixNano())
+	session := tracking.Session{ID: id, GuideID: "synthetic-guide", TripID: "synthetic-trip", RouteID: "synthetic-route", State: tracking.Active, StartedAt: now, MaxObservationAge: time.Minute, FutureSkew: time.Second}
+	if err := s.Provision(ctx, session, sha256.Sum256([]byte("test-only-read-digest"))); err != nil {
+		t.Fatal(err)
+	}
+	for _, seq := range []int64{1, 3, 7} {
+		p := tracking.Position{SessionID: id, Sequence: seq, CapturedAt: now.Add(time.Duration(seq) * time.Millisecond), ReceivedAt: now.Add(time.Duration(seq) * time.Millisecond), Longitude: -74.1, Latitude: 4.6}
+		if _, err := s.Accept(ctx, p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first, err := s.History(ctx, id, 0, 2)
+	if err != nil || len(first.Positions) != 2 || first.Positions[0].Sequence != 1 || first.Positions[1].Sequence != 3 || first.NextSequence != 3 || !first.HasMore {
+		t.Fatalf("first page: %+v %v", first, err)
+	}
+	// Explicitly accelerate expiry on the isolated test key only. Production
+	// positions retain their independently assigned 24h+ Redis expiry.
+	if err := client.PExpire(ctx, positionKey(id, 7), time.Millisecond).Err(); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	page, err := s.History(ctx, id, 0, 2)
+	if err != nil || len(page.Positions) != 2 || page.Positions[0].Sequence != 1 || page.Positions[1].Sequence != 3 || page.HasMore {
+		t.Fatalf("stale reference gave false has_more: %+v %v", page, err)
+	}
+	latest, err := s.Latest(ctx, id)
+	if err != nil || latest.Sequence != 3 {
+		t.Fatalf("latest fallback: %+v %v", latest, err)
+	}
+	if err := client.PExpire(ctx, positionKey(id, 1), time.Millisecond).Err(); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	page, err = s.History(ctx, id, 0, 1)
+	if err != nil || len(page.Positions) != 1 || page.Positions[0].Sequence != 3 || page.HasMore {
+		t.Fatalf("hole: %+v %v", page, err)
+	}
+	if _, err := client.ZAdd(ctx, historyKey(id), redis.Z{Score: 9, Member: "9"}).Result(); err != nil {
+		t.Fatal(err)
+	}
+	for seq := int64(10); seq < 140; seq++ {
+		if err := client.ZAdd(ctx, historyKey(id), redis.Z{Score: float64(seq), Member: fmt.Sprint(seq)}).Err(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.History(ctx, id, 3, 1); !errors.Is(err, tracking.ErrPending) {
+		t.Fatalf("bounded stale scan: %v", err)
+	}
+	page, err = s.History(ctx, id, 3, 1)
+	if err != nil || len(page.Positions) != 0 || page.HasMore {
+		t.Fatalf("stale cleanup: %+v %v", page, err)
+	}
 }
 
 type lostCreateReply struct{ once atomic.Bool }

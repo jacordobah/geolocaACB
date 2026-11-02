@@ -70,6 +70,8 @@ func NewService(repo Repository, maxAge, futureSkew time.Duration, now func() ti
 	return &Service{repo: repo, maxAge: maxAge, futureSkew: futureSkew, now: now, entropy: entropy}, nil
 }
 
+func (s *Service) ObservationLimits() (time.Duration, time.Duration) { return s.maxAge, s.futureSkew }
+
 // Provision is internal only. It creates a technical session, not a finding
 // that the referenced route is geographically eligible for monitoring.
 // The plaintext credential is returned only after confirmed persistence.
@@ -119,8 +121,21 @@ func (s *Service) issue(ctx context.Context, guideID, tripID, routeID string, sn
 	if snapshot != nil {
 		session.SnapshotHash = snapshot.SnapshotHash
 	}
-	if err := session.ValidateNew(); err != nil {
+	if err := s.ProvisionPrepared(ctx, session, credential, snapshot); err != nil {
 		return Session{}, "", err
+	}
+	return session, base64.RawURLEncoding.EncodeToString(credential), nil
+}
+
+// ProvisionPrepared is for a trusted control use case which has durably fixed
+// the session ID, start time, snapshot and credential material before retrying.
+// It never exposes the plaintext credential through persistence.
+func (s *Service) ProvisionPrepared(ctx context.Context, session Session, credential []byte, snapshot *GeographicSnapshot) error {
+	if len(credential) != 32 || (snapshot == nil && session.SnapshotHash != "") || (snapshot != nil && session.SnapshotHash != snapshot.SnapshotHash) {
+		return ErrInvalid
+	}
+	if err := session.ValidateNew(); err != nil {
+		return err
 	}
 	digest := sha256.Sum256(credential)
 	provision := func() error {
@@ -136,9 +151,9 @@ func (s *Service) issue(ctx context.Context, guideID, tripID, routeID string, sn
 		err = provision()
 	}
 	if err != nil {
-		return Session{}, "", err
+		return err
 	}
-	return session, base64.RawURLEncoding.EncodeToString(credential), nil
+	return nil
 }
 
 func (s *Service) Status(ctx context.Context, id string) (Session, error) {

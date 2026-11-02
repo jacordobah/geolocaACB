@@ -35,19 +35,22 @@ const (
 
 // External identifiers are opaque to GPS. They are encoded only in Redis keys.
 type Session struct {
-	ID                string        `json:"id"`
-	GuideID           string        `json:"guide_id"`
-	RouteID           string        `json:"route_id"`
-	TripID            string        `json:"trip_id"`
-	State             State         `json:"state"`
-	StartedAt         time.Time     `json:"started_at"`
-	FinishedAt        *time.Time    `json:"finished_at,omitempty"`
-	LastSequence      int64         `json:"last_sequence"`
-	LastCapturedAt    *time.Time    `json:"last_captured_at,omitempty"`
-	FirstArrival      *Arrival      `json:"first_arrival,omitempty"`
-	MaxObservationAge time.Duration `json:"max_observation_age"`
-	FutureSkew        time.Duration `json:"future_skew"`
-	SnapshotHash      string        `json:"snapshot_hash,omitempty"`
+	ID             string     `json:"id"`
+	GuideID        string     `json:"guide_id"`
+	RouteID        string     `json:"route_id"`
+	TripID         string     `json:"trip_id"`
+	State          State      `json:"state"`
+	StartedAt      time.Time  `json:"started_at"`
+	FinishedAt     *time.Time `json:"finished_at,omitempty"`
+	LastSequence   int64      `json:"last_sequence"`
+	LastCapturedAt *time.Time `json:"last_captured_at,omitempty"`
+	// LastPositionExpiresAt is internal evidence for read availability. It is
+	// never included in the public session JSON.
+	LastPositionExpiresAt *time.Time    `json:"-"`
+	FirstArrival          *Arrival      `json:"first_arrival,omitempty"`
+	MaxObservationAge     time.Duration `json:"max_observation_age"`
+	FutureSkew            time.Duration `json:"future_skew"`
+	SnapshotHash          string        `json:"snapshot_hash,omitempty"`
 }
 
 type Arrival struct {
@@ -130,7 +133,7 @@ func validTime(t time.Time) bool {
 }
 
 func (s Session) ValidateNew() error {
-	if !validID(s.ID) || !validID(s.GuideID) || !validID(s.RouteID) || !validID(s.TripID) || !validTime(s.StartedAt) || s.State != Active || s.LastSequence != 0 || s.LastCapturedAt != nil || s.FinishedAt != nil || s.FirstArrival != nil {
+	if !validID(s.ID) || !validID(s.GuideID) || !validID(s.RouteID) || !validID(s.TripID) || !validTime(s.StartedAt) || s.State != Active || s.LastSequence != 0 || s.LastCapturedAt != nil || s.LastPositionExpiresAt != nil || s.FinishedAt != nil || s.FirstArrival != nil {
 		return fmt.Errorf("%w: new session", ErrInvalid)
 	}
 	if s.SnapshotHash != "" && !validHash(s.SnapshotHash) {
@@ -148,7 +151,7 @@ func validHash(s string) bool {
 }
 
 func (p Position) Validate() error {
-	if !validID(p.SessionID) || p.Sequence < 1 || p.Sequence > 1<<53 || !validTime(p.CapturedAt) || !validTime(p.ReceivedAt) || p.CapturedAt.After(p.ReceivedAt.Add(5*time.Minute)) || p.IdempotencyVersion < 0 || p.IdempotencyVersion > 2 || math.IsNaN(p.Longitude) || math.IsInf(p.Longitude, 0) || math.IsNaN(p.Latitude) || math.IsInf(p.Latitude, 0) || p.Longitude < -180 || p.Longitude > 180 || p.Latitude < -90 || p.Latitude > 90 {
+	if !validID(p.SessionID) || p.Sequence < 1 || p.Sequence > (1<<53)-1 || !validTime(p.CapturedAt) || !validTime(p.ReceivedAt) || p.CapturedAt.After(p.ReceivedAt.Add(5*time.Minute)) || p.IdempotencyVersion < 0 || p.IdempotencyVersion > 2 || math.IsNaN(p.Longitude) || math.IsInf(p.Longitude, 0) || math.IsNaN(p.Latitude) || math.IsInf(p.Latitude, 0) || p.Longitude < -180 || p.Longitude > 180 || p.Latitude < -90 || p.Latitude > 90 {
 		return fmt.Errorf("%w: position", ErrInvalid)
 	}
 	if p.AccuracyMeters != nil && (!finiteNonnegative(*p.AccuracyMeters)) {

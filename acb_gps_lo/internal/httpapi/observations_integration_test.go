@@ -48,6 +48,11 @@ func setup(t *testing.T) integration {
 	if err := client.Ping(context.Background()).Err(); err != nil {
 		t.Fatal(err)
 	}
+	if os.Getenv("GPS_TEST_REDIS_ISOLATED") == "1" {
+		if err := client.FlushDB(context.Background()).Err(); err != nil {
+			t.Fatal(err)
+		}
+	}
 	store, err := redisstore.New(client, 24*time.Hour, 5*time.Minute)
 	if err != nil {
 		t.Fatal(err)
@@ -404,7 +409,7 @@ func TestRedisHTTPGeographicArrivalEvent(t *testing.T) {
 	}
 	count := 0
 	for _, event := range events {
-		if event.TrackingID == id {
+		if event.TrackingID == id && event.Sequence > 0 {
 			count++
 			if event.Type != tracking.FirstMeetingPointArrival {
 				t.Fatalf("wrong event %+v", event)

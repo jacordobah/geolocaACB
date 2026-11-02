@@ -20,9 +20,29 @@ func Handler(redis Pinger, pingTimeout time.Duration, logger *slog.Logger) http.
 }
 
 func HandlerWithTracking(redis Pinger, pingTimeout time.Duration, logger *slog.Logger, observations http.Handler) http.Handler {
+	return HandlerWithControl(redis, pingTimeout, logger, observations, nil)
+}
+
+// A nil control handler keeps all administrative routes absent in production.
+func HandlerWithControl(redis Pinger, pingTimeout time.Duration, logger *slog.Logger, observations, control http.Handler) http.Handler {
+	return HandlerWithReads(redis, pingTimeout, logger, observations, control, nil)
+}
+
+// Reads is nil in the production composition until a verified identity
+// provider has been approved and supplied.
+func HandlerWithReads(redis Pinger, pingTimeout time.Duration, logger *slog.Logger, observations, control, reads http.Handler) http.Handler {
 	mux := http.NewServeMux()
 	if observations != nil {
 		mux.Handle("POST /api/v1/tracking-sessions/{tracking_id}/observations", observations)
+	}
+	if control != nil {
+		mux.Handle("POST /api/v1/tracking-sessions", control)
+		mux.Handle("GET /api/v1/tracking-sessions/{tracking_id}", control)
+		mux.Handle("POST /api/v1/tracking-sessions/{tracking_id}/finish", control)
+	}
+	if reads != nil {
+		mux.Handle("GET /api/v1/tracking-sessions/{tracking_id}/latest-position", reads)
+		mux.Handle("GET /api/v1/tracking-sessions/{tracking_id}/positions", reads)
 	}
 	mux.HandleFunc("GET /health/live", func(w http.ResponseWriter, _ *http.Request) {
 		respond(w, http.StatusOK, map[string]string{"status": "alive"})

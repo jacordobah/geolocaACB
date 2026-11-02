@@ -29,6 +29,21 @@ func eventSnapshot(t *testing.T) tracking.GeographicSnapshot {
 	return snapshot
 }
 
+func geographicEventsForSession(t *testing.T, store *Store, ctx context.Context, id string) []tracking.Event {
+	t.Helper()
+	all, err := store.PendingEvents(ctx, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var events []tracking.Event
+	for _, event := range all {
+		if event.TrackingID == id && event.Sequence > 0 {
+			events = append(events, event)
+		}
+	}
+	return events
+}
+
 func TestEventTransitionsAndOutbox(t *testing.T) {
 	store, client := testStore(t)
 	ctx := context.Background()
@@ -77,9 +92,9 @@ func TestEventTransitionsAndOutbox(t *testing.T) {
 	if err != nil || loaded.FirstArrival == nil || loaded.FirstArrival.Sequence != 2 {
 		t.Fatalf("session arrival: %+v %v", loaded, err)
 	}
-	firstEvents, err := store.PendingEvents(ctx, 0, 10)
-	if err != nil || len(firstEvents) != 1 || firstEvents[0].Type != tracking.FirstMeetingPointArrival {
-		t.Fatalf("first outbox: %+v %v", firstEvents, err)
+	firstEvents := geographicEventsForSession(t, store, ctx, id)
+	if len(firstEvents) != 1 || firstEvents[0].Type != tracking.FirstMeetingPointArrival {
+		t.Fatalf("first outbox: %+v", firstEvents)
 	}
 	eventIDs = append(eventIDs, firstEvents[0].ID)
 	if ttl := client.PTTL(ctx, eventKey(firstEvents[0].ID)).Val(); ttl != -1 {
@@ -103,9 +118,9 @@ func TestEventTransitionsAndOutbox(t *testing.T) {
 	send(6, -74.1005, 4.61, 5)
 	send(7, -74.1005, 4.6, 5)
 	send(8, -74.1005, 4.6, 5)
-	events, err := store.PendingEvents(ctx, 0, 10)
-	if err != nil || len(events) != 4 {
-		t.Fatalf("outbox events: %+v %v", events, err)
+	events := geographicEventsForSession(t, store, ctx, id)
+	if len(events) != 4 {
+		t.Fatalf("outbox events: %+v", events)
 	}
 	want := map[tracking.EventType]bool{tracking.FirstMeetingPointArrival: false, tracking.MeetingPointArrival: false, tracking.RouteDeviationStarted: false, tracking.RouteDeviationResolved: false}
 	for _, event := range events {
@@ -136,9 +151,9 @@ func TestEventTransitionsAndOutbox(t *testing.T) {
 	if err := store.FinishSession(ctx, id, time.Now().UTC().Truncate(time.Millisecond)); err != nil {
 		t.Fatal(err)
 	}
-	stillPending, err := store.PendingEvents(ctx, 0, 10)
-	if err != nil || len(stillPending) != 4 {
-		t.Fatalf("finish lost events: %+v %v", stillPending, err)
+	stillPending := geographicEventsForSession(t, store, ctx, id)
+	if len(stillPending) != 4 {
+		t.Fatalf("finish lost events: %+v", stillPending)
 	}
 	for _, event := range stillPending {
 		if ttl := client.PTTL(ctx, eventKey(event.ID)).Val(); ttl != -1 {
@@ -153,9 +168,9 @@ func TestEventTransitionsAndOutbox(t *testing.T) {
 	if err := client.Del(ctx, positionKey(id, 1), positionKey(id, 2)).Err(); err != nil {
 		t.Fatal(err)
 	}
-	stillPending, err = store.PendingEvents(ctx, 0, 10)
-	if err != nil || len(stillPending) != 4 {
-		t.Fatalf("history expiry removed events: %+v %v", stillPending, err)
+	stillPending = geographicEventsForSession(t, store, ctx, id)
+	if len(stillPending) != 4 {
+		t.Fatalf("history expiry removed events: %+v", stillPending)
 	}
 	phantom := "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
 	if err := client.ZAdd(ctx, outboxKey, redis.Z{Score: float64(now.UnixMilli()), Member: phantom}).Err(); err != nil {
@@ -274,9 +289,9 @@ func TestPendingTransitionRecoveryAndPrewriteGuard(t *testing.T) {
 			if _, err := restarted.ReadPosition(ctx, id, 1); err != nil {
 				t.Fatalf("repaired position: %v", err)
 			}
-			events, err := restarted.PendingEvents(ctx, 0, 10)
-			if err != nil || len(events) == 0 || events[0].ID != eventID {
-				t.Fatalf("repaired outbox: %+v %v", events, err)
+			events := geographicEventsForSession(t, restarted, ctx, id)
+			if len(events) == 0 || events[0].ID != eventID {
+				t.Fatalf("repaired outbox: %+v", events)
 			}
 			if pending := client.HGet(ctx, sessionKey(id), "pending_sequence").Val(); pending != "" {
 				t.Fatal("pending marker remained")
@@ -349,7 +364,7 @@ func TestConcurrentGeographicEventIdempotence(t *testing.T) {
 	}
 	count := 0
 	for _, event := range events {
-		if event.TrackingID == id {
+		if event.TrackingID == id && event.Sequence > 0 {
 			count++
 		}
 	}
@@ -432,7 +447,9 @@ func TestConcurrentGeographicEventIdempotence(t *testing.T) {
 	}
 	counts := map[string]int{}
 	for _, event := range events {
-		counts[event.TrackingID]++
+		if event.Sequence > 0 {
+			counts[event.TrackingID]++
+		}
 	}
 	if counts[id] != 1 || counts[otherID] != 1 {
 		t.Fatalf("cross-session events %+v", counts)
@@ -491,7 +508,7 @@ func TestEventOutboxRestartProbe(t *testing.T) {
 	}
 	var eventID string
 	for _, event := range events {
-		if event.TrackingID == id {
+		if event.TrackingID == id && event.Sequence > 0 {
 			eventID = event.ID
 			if event.Type != tracking.FirstMeetingPointArrival {
 				t.Fatalf("wrong event %+v", event)

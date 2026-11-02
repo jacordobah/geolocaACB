@@ -26,6 +26,10 @@ type Config struct {
 	GPSMaxObservationBytes   int64
 	GPSRequestTimeout        time.Duration
 	RecoveryPoll             time.Duration
+	ControlAPIEnabled        bool
+	ReadPageLimit            int64
+	ReadMaxResponseBytes     int
+	ReadRequestTimeout       time.Duration
 	OperationsEnabled        bool
 	OperationsEventURL       string
 	OperationsToken          string
@@ -131,6 +135,37 @@ func Parse(lookup func(string) (string, bool)) (Config, error) {
 	cfg.RecoveryPoll, err = duration(lookup, "GPS_RECOVERY_POLL", "2s")
 	if err != nil || cfg.RecoveryPoll < 100*time.Millisecond {
 		return Config{}, fmt.Errorf("GPS_RECOVERY_POLL must be at least 100ms")
+	}
+	controlEnabled, err := value(lookup, "GPS_CONTROL_API_ENABLED", "false")
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.ControlAPIEnabled, err = strconv.ParseBool(controlEnabled)
+	if err != nil {
+		return Config{}, fmt.Errorf("GPS_CONTROL_API_ENABLED must be boolean")
+	}
+	if cfg.ControlAPIEnabled {
+		return Config{}, fmt.Errorf("control API cannot be enabled until a verified identity provider and administrative policy contract are configured")
+	}
+	readPage, err := value(lookup, "GPS_READ_MAX_PAGE_LIMIT", "100")
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.ReadPageLimit, err = strconv.ParseInt(readPage, 10, 64)
+	if err != nil || cfg.ReadPageLimit < 1 || cfg.ReadPageLimit > 100 {
+		return Config{}, fmt.Errorf("GPS_READ_MAX_PAGE_LIMIT must be 1..100")
+	}
+	readBytes, err := value(lookup, "GPS_READ_MAX_RESPONSE_BYTES", "1048576")
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.ReadMaxResponseBytes, err = strconv.Atoi(readBytes)
+	if err != nil || cfg.ReadMaxResponseBytes < 1024 || cfg.ReadMaxResponseBytes > 4<<20 {
+		return Config{}, fmt.Errorf("GPS_READ_MAX_RESPONSE_BYTES must be 1024..4194304")
+	}
+	cfg.ReadRequestTimeout, err = duration(lookup, "GPS_READ_REQUEST_TIMEOUT", "5s")
+	if err != nil || cfg.ReadRequestTimeout > 30*time.Second {
+		return Config{}, fmt.Errorf("GPS_READ_REQUEST_TIMEOUT must be at most 30s")
 	}
 	enabled, err := value(lookup, "GPS_OPERATIONS_DELIVERY_ENABLED", "false")
 	if err != nil {

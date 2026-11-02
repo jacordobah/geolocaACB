@@ -6,6 +6,15 @@ import (
 	"time"
 )
 
+func TestControlRequiresApprovedVerifier(t *testing.T) {
+	if _, err := Parse(lookup(map[string]string{"GPS_CONTROL_API_ENABLED": "true"})); err == nil {
+		t.Fatal("control API enabled without identity provider")
+	}
+	if _, err := Parse(lookup(map[string]string{"GPS_CONTROL_API_ENABLED": "invalid"})); err == nil {
+		t.Fatal("invalid control flag")
+	}
+}
+
 func lookup(values map[string]string) func(string) (string, bool) {
 	return func(key string) (string, bool) {
 		value, ok := values[key]
@@ -17,6 +26,12 @@ func TestParseDefaultsAndOverrides(t *testing.T) {
 	defaults, err := Parse(lookup(nil))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if defaults.ControlAPIEnabled {
+		t.Fatal("control API must be disabled by default")
+	}
+	if defaults.ReadPageLimit != 100 || defaults.ReadMaxResponseBytes != 1<<20 || defaults.ReadRequestTimeout != 5*time.Second {
+		t.Fatalf("read defaults: %+v", defaults)
 	}
 	if defaults.HTTPPort != 8080 || defaults.RedisAddr != "redis:6379" ||
 		defaults.RedisDialTimeout != 2*time.Second ||
@@ -74,6 +89,10 @@ func TestParseRejectsInvalidValues(t *testing.T) {
 		{"large future skew", "GPS_FUTURE_SKEW", "6m"},
 		{"short body limit", "GPS_MAX_OBSERVATION_BYTES", "16"},
 		{"zero request timeout", "GPS_REQUEST_TIMEOUT", "0s"},
+		{"zero read page limit", "GPS_READ_MAX_PAGE_LIMIT", "0"},
+		{"large read page limit", "GPS_READ_MAX_PAGE_LIMIT", "101"},
+		{"small read response", "GPS_READ_MAX_RESPONSE_BYTES", "100"},
+		{"large read timeout", "GPS_READ_REQUEST_TIMEOUT", "31s"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

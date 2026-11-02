@@ -3,6 +3,7 @@ package tracking
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"github.com/jacordobah/geolocaACB/ACB_GPS_Lo/internal/geo"
 	"reflect"
@@ -66,6 +67,8 @@ const (
 	MeetingPointArrival      EventType = "meeting_point_arrival"
 	RouteDeviationStarted    EventType = "route_deviation_started"
 	RouteDeviationResolved   EventType = "route_deviation_resolved"
+	TrackingSessionActivated EventType = "tracking_session_activated"
+	TrackingSessionFinished  EventType = "tracking_session_finished"
 )
 
 // Event is self-contained: its future consumer need not read GPS history.
@@ -94,7 +97,45 @@ type Event struct {
 	EpisodeStartSequence       int64     `json:"episode_start_sequence,omitempty"`
 }
 
+// Lifecycle envelopes contain no invented GPS observation, coordinate or
+// sequence. Geographic envelopes retain their existing JSON representation.
+func (event Event) MarshalJSON() ([]byte, error) {
+	if event.Type == TrackingSessionActivated || event.Type == TrackingSessionFinished {
+		return json.Marshal(struct {
+			ID                  string    `json:"event_id"`
+			Type                EventType `json:"event_type"`
+			TrackingID          string    `json:"tracking_id"`
+			TripID              string    `json:"trip_id"`
+			GuideID             string    `json:"guide_id"`
+			GeoRouteID          string    `json:"geo_route_id"`
+			OccurredAt          time.Time `json:"occurred_at"`
+			GeometryVersion     *string   `json:"geometry_version,omitempty"`
+			GeometryFingerprint string    `json:"geometry_fingerprint,omitempty"`
+			SnapshotHash        string    `json:"snapshot_hash,omitempty"`
+		}{event.ID, event.Type, event.TrackingID, event.TripID, event.GuideID, event.GeoRouteID, event.OccurredAt, event.GeometryVersion, event.GeometryFingerprint, event.SnapshotHash})
+	}
+	type raw Event
+	return json.Marshal(raw(event))
+}
+
+func NewLifecycleEvent(session Session, kind EventType, at time.Time) (Event, error) {
+	if kind != TrackingSessionActivated && kind != TrackingSessionFinished {
+		return Event{}, ErrInvalid
+	}
+	event := Event{ID: eventID(session.ID, kind, "", 0), Type: kind, TrackingID: session.ID, TripID: session.TripID, GuideID: session.GuideID, GeoRouteID: session.RouteID, OccurredAt: at.UTC().Truncate(time.Millisecond), SnapshotHash: session.SnapshotHash}
+	return event, event.Validate()
+}
+
 func (event Event) Validate() error {
+	if event.Type == TrackingSessionActivated || event.Type == TrackingSessionFinished {
+		if !validHash(event.ID) || event.ID != eventID(event.TrackingID, event.Type, "", 0) || !validID(event.TrackingID) || !validID(event.TripID) || !validID(event.GuideID) || !validID(event.GeoRouteID) || !validTime(event.OccurredAt) || event.Sequence != 0 || !event.CapturedAt.IsZero() || !event.ObservedFrom.IsZero() || event.MeetingPointID != "" || event.MeetingPointOrder != 0 || event.EvidenceCount != 0 || event.EpisodeStartSequence != 0 || event.Longitude != 0 || event.Latitude != 0 || event.AccuracyMeters != 0 || event.RouteDistanceMeters != 0 || event.MeetingPointDistanceMeters != nil || event.SnapshotHash != "" && !validHash(event.SnapshotHash) || event.GeometryFingerprint != "" && !validHash(event.GeometryFingerprint) {
+			return ErrInvalid
+		}
+		if event.GeometryVersion != nil && strings.TrimSpace(*event.GeometryVersion) == "" {
+			return ErrInvalid
+		}
+		return nil
+	}
 	if !validHash(event.ID) || !validHash(event.SnapshotHash) || !validHash(event.GeometryFingerprint) || !validID(event.TrackingID) || !validID(event.TripID) || !validID(event.GuideID) || !validID(event.GeoRouteID) || event.Sequence < 1 || !validTime(event.OccurredAt) || !validTime(event.CapturedAt) || !validTime(event.ObservedFrom) || event.ObservedFrom.After(event.CapturedAt) || event.EvidenceCount < 1 || !finiteNonnegative(event.AccuracyMeters) || !finiteNonnegative(event.RouteDistanceMeters) || event.Longitude < -180 || event.Longitude > 180 || event.Latitude < -90 || event.Latitude > 90 || event.GeometryVersion != nil && strings.TrimSpace(*event.GeometryVersion) == "" {
 		return ErrInvalid
 	}

@@ -181,6 +181,11 @@ func (s *Store) PendingEvents(ctx context.Context, offset, limit int64) ([]track
 	}
 	events := make([]tracking.Event, 0, len(ids))
 	for _, id := range ids {
+		if _, err := s.client.ZScore(ctx, pendingEventsKey, id).Result(); err == nil {
+			return nil, tracking.ErrPending
+		} else if !errors.Is(err, redis.Nil) {
+			return nil, storeErr(err)
+		}
 		raw, err := s.client.Get(ctx, eventKey(id)).Result()
 		if errors.Is(err, redis.Nil) {
 			return nil, tracking.ErrUnavailable

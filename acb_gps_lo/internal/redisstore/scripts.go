@@ -111,13 +111,22 @@ return 'ACCEPTED'
 `)
 
 var createScript = redis.NewScript(`
-local session, active, snapshot = KEYS[1], KEYS[2], KEYS[3]
+local session, active, snapshot, eventKey, outbox, pendingEvents = KEYS[1], KEYS[2], KEYS[3], KEYS[4], KEYS[5], KEYS[6]
+local eventID, eventPayload, eventDue = ARGV[13] or '', ARGV[14] or '', tonumber(ARGV[15] or '')
 local kind = redis.call('TYPE', session).ok
 if kind ~= 'none' and kind ~= 'hash' then return 'CORRUPT' end
 local indexKind = redis.call('TYPE', active).ok
 if indexKind ~= 'none' and indexKind ~= 'zset' then return 'CORRUPT' end
 local snapshotKind = redis.call('TYPE', snapshot).ok
 if snapshotKind ~= 'none' and snapshotKind ~= 'string' then return 'CORRUPT' end
+if eventID ~= '' then
+  if string.len(eventID) ~= 64 or eventPayload == '' or not eventDue then return 'INVALID' end
+  if redis.call('TYPE', eventKey).ok ~= 'none' and redis.call('TYPE', eventKey).ok ~= 'string' then return 'CORRUPT' end
+  if redis.call('TYPE', outbox).ok ~= 'none' and redis.call('TYPE', outbox).ok ~= 'zset' then return 'CORRUPT' end
+  if redis.call('TYPE', pendingEvents).ok ~= 'none' and redis.call('TYPE', pendingEvents).ok ~= 'zset' then return 'CORRUPT' end
+  local oldEvent=redis.call('GET',eventKey)
+  if oldEvent and oldEvent ~= eventPayload then return 'CONFLICT' end
+end
 local transitionEnabled = ARGV[12] or '0'
 if transitionEnabled ~= '0' and transitionEnabled ~= '1' then return 'INVALID' end
 if transitionEnabled == '1' and ARGV[10] == '' then return 'INVALID' end
@@ -149,14 +158,22 @@ else
   if fields[9] == 'provisioning' and fields[10] ~= '0' then return 'CORRUPT' end
   local score = redis.call('ZSCORE', active, ARGV[6])
   if fields[9] == 'active' and score and tonumber(score) == tonumber(ARGV[5]) then
-    if fields[11] == '1' then return 'EXISTING' end
+    if fields[11] == '1' and (eventID == '' or (redis.call('HGET',session,'activation_event_done') == '1' and not redis.call('ZSCORE',pendingEvents,eventID))) then return 'EXISTING' end
     -- Existing pre-upgrade sessions had no completion marker.
-    if fields[11] == false then return 'EXISTING' end
+    if fields[11] == false and eventID == '' then return 'EXISTING' end
   end
   if fields[9] == 'active' then redis.call('HSET', session, 'state', 'provisioning', 'provision_complete', '0') end
 end
+if eventID ~= '' then
+  redis.call('ZADD',pendingEvents,tonumber(ARGV[5]),eventID)
+  redis.call('SET',eventKey,eventPayload,'NX')
+  redis.call('ZADD',outbox,'NX',eventDue,eventID)
+end
 redis.call('ZADD', active, tonumber(ARGV[5]), ARGV[6])
-redis.call('HSET', session, 'state', 'active', 'provision_complete', '1')
+if eventID ~= '' then
+  redis.call('HSET', session, 'state', 'active', 'provision_complete', '1', 'activation_event_done', '1')
+  redis.call('ZREM',pendingEvents,eventID)
+else redis.call('HSET', session, 'state', 'active', 'provision_complete', '1') end
 if kind == 'none' then return 'CREATED' end
 return 'REPAIRED'
 `)
@@ -164,19 +181,42 @@ return 'REPAIRED'
 var finishScript = redis.NewScript(`
 if redis.call('TYPE', KEYS[1]).ok ~= 'hash' then return 'MISSING' end
 if redis.call('TYPE', KEYS[2]).ok ~= 'none' and redis.call('TYPE', KEYS[2]).ok ~= 'zset' then return 'CORRUPT' end
+if redis.call('TYPE', KEYS[3]).ok ~= 'none' and redis.call('TYPE', KEYS[3]).ok ~= 'zset' then return 'CORRUPT' end
 if redis.call('TYPE', KEYS[4]).ok ~= 'none' and redis.call('TYPE', KEYS[4]).ok ~= 'string' then return 'CORRUPT' end
-local fields = redis.call('HMGET', KEYS[1], 'state', 'pending_sequence', 'finished_ms', 'max_expiry_ms')
+if redis.call('TYPE',KEYS[5]).ok ~= 'none' and redis.call('TYPE',KEYS[5]).ok ~= 'string' then return 'CORRUPT' end
+if redis.call('TYPE',KEYS[6]).ok ~= 'none' and redis.call('TYPE',KEYS[6]).ok ~= 'zset' then return 'CORRUPT' end
+if redis.call('TYPE',KEYS[7]).ok ~= 'none' and redis.call('TYPE',KEYS[7]).ok ~= 'zset' then return 'CORRUPT' end
+if redis.call('TYPE',KEYS[8]).ok ~= 'none' and redis.call('TYPE',KEYS[8]).ok ~= 'zset' then return 'CORRUPT' end
+local fields = redis.call('HMGET', KEYS[1], 'state', 'pending_sequence', 'finished_ms', 'max_expiry_ms','finish_event_payload','finish_event_done')
 if fields[2] then return 'PENDING' end
-if fields[1] ~= 'active' and fields[1] ~= 'finished' then return 'CORRUPT' end
+if fields[1] ~= 'active' and fields[1] ~= 'finishing' and fields[1] ~= 'finished' then return 'CORRUPT' end
 if fields[4] and not tonumber(fields[4]) then return 'CORRUPT' end
 local now = redis.call('TIME')
 local redisMs = tonumber(now[1]) * 1000 + math.floor(tonumber(now[2]) / 1000)
+if fields[1] == 'finished' and fields[6] == '1' and not redis.call('ZSCORE',KEYS[7],ARGV[3]) then
+  redis.call('ZREM',KEYS[8],ARGV[2])
+  return 'FINISHED'
+end
+local payload=fields[5] or ARGV[4]
+local finishedMs=tonumber(fields[3]) or tonumber(ARGV[1])
+if not payload or payload == '' or not finishedMs or string.len(ARGV[3]) ~= 64 then return 'CORRUPT' end
+if fields[5] and fields[5] ~= ARGV[4] then return 'CONFLICT' end
+local old=redis.call('GET',KEYS[5])
+if old and old ~= payload then return 'CORRUPT' end
 local expiry = math.max(tonumber(fields[4]) or 0, redisMs + 86400000)
-if fields[1] == 'active' then redis.call('HSET', KEYS[1], 'state', 'finished', 'finished_ms', ARGV[1]) end
+redis.call('ZADD',KEYS[8],redisMs,ARGV[2])
+redis.call('ZADD',KEYS[7],redisMs,ARGV[3])
+if fields[1] == 'active' then redis.call('HSET',KEYS[1],'state','finishing','finished_ms',string.format('%.0f',finishedMs),'finish_event_payload',payload) end
 redis.call('HDEL', KEYS[1], 'credential_hash')
+redis.call('SET',KEYS[5],payload,'NX')
+redis.call('ZADD',KEYS[6],'NX',finishedMs,ARGV[3])
 redis.call('ZREM', KEYS[2], ARGV[2])
+redis.call('HSET',KEYS[1],'state','finished','finish_event_done','1')
 redis.call('PEXPIREAT', KEYS[1], string.format('%.0f', expiry))
 redis.call('PEXPIREAT', KEYS[3], string.format('%.0f', expiry))
 if redis.call('EXISTS', KEYS[4]) == 1 then redis.call('PEXPIREAT', KEYS[4], string.format('%.0f', expiry)) end
+redis.call('ZREM',KEYS[7],ARGV[3])
+redis.call('HDEL',KEYS[1],'finish_event_payload')
+redis.call('ZREM',KEYS[8],ARGV[2])
 return 'FINISHED'
 `)

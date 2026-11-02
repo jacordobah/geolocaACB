@@ -1,0 +1,403 @@
+openapi: 3.1.0
+info:
+  title: ACB_GPS_Lo HTTP API
+  version: 0.9.0-prototype2
+  description: >-
+    Contrato de los handlers del código actual. Salud y recepción GPS están registradas en el binario.
+    Control y lectura están implementados y probados aisladamente, pero NO están
+    registrados ni habilitados en el proceso operativo hasta contar con identidad
+    de servicio verificada, política autorizada y rutas OperationalReady. La opción
+    GPS_CONTROL_API_ENABLED=true es rechazada actualmente; cambiarla no registra rutas.
+servers:
+  - url: http://127.0.0.1:8081
+    description: Publicación local predeterminada de Docker Compose
+tags:
+  - name: salud
+  - name: observaciones
+  - name: control-deshabilitado
+  - name: lectura-deshabilitada
+paths:
+  /health/live:
+    get:
+      tags: [salud]
+      summary: Proceso y servidor HTTP vivos
+      x-operational-status: enabled
+      responses:
+        '200':
+          description: Proceso vivo, sin comprobar dependencias
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Live' }
+              example: { status: alive }
+  /health/ready:
+    get:
+      tags: [salud]
+      summary: Disponibilidad de Redis
+      x-operational-status: enabled
+      description: No comprueba Python ni Operaciones; no admite query string.
+      responses:
+        '200':
+          description: Redis disponible
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Readiness' }
+              example: { status: ready, dependencies: { redis: available } }
+        '400':
+          description: Query string no admitida por readiness
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HealthQueryError' }
+              example: { status: unsupported_query }
+        '503':
+          description: Redis no disponible
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Readiness' }
+              example: { status: not_ready, dependencies: { redis: unavailable } }
+  /api/v1/tracking-sessions:
+    post:
+      tags: [control-deshabilitado]
+      summary: Aprovisionar sesión técnica
+      x-operational-status: implemented-disabled
+      description: >-
+        Handler implementado, ausente del mux de producción. Necesita verificador real,
+        alcance sobre trip_id, política aprobada y ruta OperationalReady. Cuerpo <=4096 bytes;
+        JSON estricto; respuesta con Cache-Control no-store. Un reintento idéntico usa
+        el mismo Idempotency-Key y puede recibir credencial sólo en su ventana de emisión.
+      security: [{ serviceBearer: [] }]
+      x-required-capability: tracking:create
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 256 }
+          description: Clave opaca estable para la misma solicitud e identidad de servicio.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateSession' }
+            example: { trip_id: trip-sintetico, guide_id: guia-sintetica, geo_route_id: ruta-sintetica, policy_id: politica-aprobada }
+      responses:
+        '201': { $ref: '#/components/responses/CreatedSession' }
+        '200': { $ref: '#/components/responses/CreatedSession' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/TooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMedia' }
+        '422': { $ref: '#/components/responses/Unprocessable' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/tracking-sessions/{tracking_id}:
+    parameters: [{ $ref: '#/components/parameters/TrackingID' }]
+    get:
+      tags: [control-deshabilitado]
+      summary: Estado técnico de la sesión
+      x-operational-status: implemented-disabled
+      security: [{ serviceBearer: [] }]
+      x-required-capability: tracking:read
+      responses:
+        '200':
+          description: Sesión autorizada
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [session]
+                properties: { session: { $ref: '#/components/schemas/Session' } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/tracking-sessions/{tracking_id}/finish:
+    parameters: [{ $ref: '#/components/parameters/TrackingID' }]
+    post:
+      tags: [control-deshabilitado]
+      summary: Finalizar seguimiento técnico
+      x-operational-status: implemented-disabled
+      description: Sin cuerpo. Idempotente; revoca credencial y conserva historial sujeto a TTL.
+      security: [{ serviceBearer: [] }]
+      x-required-capability: tracking:finish
+      responses:
+        '200':
+          description: Estado finalizado
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [session]
+                properties: { session: { $ref: '#/components/schemas/Session' } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/tracking-sessions/{tracking_id}/observations:
+    parameters: [{ $ref: '#/components/parameters/TrackingID' }]
+    post:
+      tags: [observaciones]
+      summary: Aceptar una observación GPS autenticada
+      x-operational-status: enabled-for-internally-provisioned-sessions
+      description: >-
+        Cuerpo limitado por GPS_MAX_OBSERVATION_BYTES (4096 por defecto), JSON estricto.
+        El reintento idéntico conserva received_at, expires_at y evaluación originales.
+        La credencial Bearer sólo autoriza esta sesión; no autoriza lectura ni control.
+      security: [{ observationBearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ObservationInput' }
+            example: { sequence: 1, latitude: 4.6, longitude: -74.1, accuracy_m: 5, captured_at: '2026-11-02T15:00:00-05:00' }
+      responses:
+        '201': { $ref: '#/components/responses/AcceptedObservation' }
+        '200': { $ref: '#/components/responses/AcceptedObservation' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '413': { $ref: '#/components/responses/TooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMedia' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/tracking-sessions/{tracking_id}/latest-position:
+    parameters: [{ $ref: '#/components/parameters/TrackingID' }]
+    get:
+      tags: [lectura-deshabilitada]
+      summary: Última posición aceptada disponible
+      x-operational-status: implemented-disabled
+      security: [{ serviceBearer: [] }]
+      x-required-capability: tracking:read
+      responses:
+        '200':
+          description: Posición vigente
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Latest' }
+        '204': { description: Sesión existente sin observaciones; sin cuerpo }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '410':
+          description: Última posición expirada según la política de retención
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: position_expired }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/tracking-sessions/{tracking_id}/positions:
+    parameters: [{ $ref: '#/components/parameters/TrackingID' }]
+    get:
+      tags: [lectura-deshabilitada]
+      summary: Historial temporal ordenado por secuencia
+      x-operational-status: implemented-disabled
+      security: [{ serviceBearer: [] }]
+      x-required-capability: tracking:read
+      description: Omite posiciones expiradas; no extiende TTL al leer. Cache-Control no-store.
+      parameters:
+        - name: after_sequence
+          in: query
+          schema: { type: integer, minimum: 0, maximum: 9007199254740991, default: 0 }
+          description: Cursor exclusivo; admite huecos de secuencia.
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100 }
+          description: Por defecto min(50, GPS_READ_MAX_PAGE_LIMIT); máximo configurable <=100.
+      responses:
+        '200':
+          description: Página de posiciones
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/History' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422':
+          description: Página supera GPS_READ_MAX_RESPONSE_BYTES
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: page_too_large }
+        '503': { $ref: '#/components/responses/Unavailable' }
+components:
+  securitySchemes:
+    observationBearer: { type: http, scheme: bearer, description: Credencial de observación limitada a una sesión }
+    serviceBearer: { type: http, scheme: bearer, description: Credencial de servicio verificable; proveedor pendiente }
+  parameters:
+    TrackingID:
+      name: tracking_id
+      in: path
+      required: true
+      schema: { type: string, minLength: 1, maxLength: 256 }
+  schemas:
+    Live:
+      type: object
+      required: [status]
+      properties: { status: { type: string, const: alive } }
+    Readiness:
+      type: object
+      required: [status, dependencies]
+      properties:
+        status: { type: string, enum: [ready, not_ready] }
+        dependencies:
+          type: object
+          required: [redis]
+          properties: { redis: { type: string, enum: [available, unavailable] } }
+    HealthQueryError:
+      type: object
+      required: [status]
+      properties: { status: { type: string, const: unsupported_query } }
+    Error:
+      type: object
+      required: [error]
+      properties: { error: { type: string } }
+      example: { error: storage_unavailable }
+    CreateSession:
+      type: object
+      additionalProperties: false
+      required: [trip_id, guide_id, geo_route_id, policy_id]
+      properties:
+        trip_id: { type: string, minLength: 1, maxLength: 256 }
+        guide_id: { type: string, minLength: 1, maxLength: 256 }
+        geo_route_id: { type: string, minLength: 1, maxLength: 256 }
+        policy_id: { type: string, minLength: 1, maxLength: 256 }
+    Session:
+      type: object
+      description: Los dos campos duration del modelo Go se serializan como nanosegundos enteros.
+      required: [id, guide_id, route_id, trip_id, state, started_at, last_sequence, max_observation_age, future_skew]
+      properties:
+        id: { type: string }
+        guide_id: { type: string }
+        route_id: { type: string }
+        trip_id: { type: string }
+        state: { type: string, enum: [active, finished] }
+        started_at: { type: string, format: date-time }
+        finished_at: { type: string, format: date-time }
+        last_sequence: { type: integer, minimum: 0 }
+        last_captured_at: { type: string, format: date-time }
+        first_arrival: { $ref: '#/components/schemas/FirstArrival' }
+        max_observation_age: { type: integer, description: Nanosegundos }
+        future_skew: { type: integer, description: Nanosegundos }
+        snapshot_hash: { type: string }
+    FirstArrival:
+      type: object
+      required: [meeting_point_id, captured_at, sequence]
+      properties:
+        meeting_point_id: { type: string, minLength: 1, maxLength: 256 }
+        captured_at: { type: string, format: date-time }
+        sequence: { type: integer, minimum: 1, maximum: 9007199254740991 }
+        observed_from: { type: string, format: date-time }
+        distance_meters: { type: number, minimum: 0 }
+        accuracy_meters: { type: number, minimum: 0 }
+    ObservationInput:
+      type: object
+      additionalProperties: false
+      required: [sequence, latitude, longitude, accuracy_m, captured_at]
+      properties:
+        sequence: { type: integer, minimum: 1, maximum: 9007199254740991 }
+        latitude: { type: number, minimum: -90, maximum: 90 }
+        longitude: { type: number, minimum: -180, maximum: 180 }
+        accuracy_m: { type: number, minimum: 0 }
+        captured_at: { type: string, format: date-time, description: RFC3339 con zona; el servidor exige precisión de milisegundos y aplica los límites temporales fijados en la sesión }
+    GeographicResult:
+      type: object
+      properties:
+        snapshot_hash: { type: string }
+        route_status: { type: string, enum: [inside, outside, indeterminate] }
+        route_reason: { type: string }
+        route_distance_meters: { type: number }
+        meeting_points:
+          type: array
+          items:
+            type: object
+            required: [id, status, reason, distance_meters]
+            properties:
+              id: { type: string }
+              status: { type: string, enum: [inside, outside, indeterminate] }
+              reason: { type: string }
+              distance_meters: { type: number }
+        meeting_point_id: { type: string }
+        meeting_point_distance_meters: { type: number }
+    Position:
+      type: object
+      required: [sequence, latitude, longitude, accuracy_m, captured_at, received_at, geographic_evaluation]
+      properties:
+        sequence: { type: integer, minimum: 1, maximum: 9007199254740991 }
+        latitude: { type: number, minimum: -90, maximum: 90 }
+        longitude: { type: number, minimum: -180, maximum: 180 }
+        accuracy_m: { type: [number, 'null'], minimum: 0 }
+        captured_at: { type: string, format: date-time }
+        received_at: { type: string, format: date-time }
+        geographic_evaluation:
+          oneOf: [{ type: string, const: not_evaluated }, { $ref: '#/components/schemas/GeographicResult' }]
+    ObservationAcceptance:
+      type: object
+      required: [tracking_id, sequence, acceptance, received_at, expires_at, geographic_evaluation]
+      properties:
+        tracking_id: { type: string }
+        sequence: { type: integer, minimum: 1, maximum: 9007199254740991 }
+        acceptance: { type: string, enum: [accepted, replayed] }
+        received_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+        geographic_evaluation:
+          oneOf: [{ type: string, const: not_evaluated }, { $ref: '#/components/schemas/GeographicResult' }]
+      example: { tracking_id: t1, sequence: 1, acceptance: accepted, received_at: '2026-11-02T20:00:01Z', expires_at: '2026-11-03T20:05:01Z', geographic_evaluation: not_evaluated }
+    Latest:
+      type: object
+      required: [tracking_id, tracking_state, position, age_ms]
+      properties:
+        tracking_id: { type: string }
+        tracking_state: { type: string, enum: [active, finished] }
+        position: { $ref: '#/components/schemas/Position' }
+        age_ms: { type: integer, minimum: 0 }
+      example:
+        tracking_id: t1
+        tracking_state: active
+        position: { sequence: 1, latitude: 4.6, longitude: -74.1, accuracy_m: 5, captured_at: '2026-11-02T20:00:00Z', received_at: '2026-11-02T20:00:01Z', geographic_evaluation: not_evaluated }
+        age_ms: 1000
+    History:
+      type: object
+      required: [tracking_id, tracking_state, positions, next_after_sequence, has_more]
+      properties:
+        tracking_id: { type: string }
+        tracking_state: { type: string, enum: [active, finished] }
+        positions: { type: array, items: { $ref: '#/components/schemas/Position' } }
+        next_after_sequence: { type: integer, minimum: 0 }
+        has_more: { type: boolean }
+      example:
+        tracking_id: t1
+        tracking_state: finished
+        positions: [{ sequence: 1, latitude: 4.6, longitude: -74.1, accuracy_m: 5, captured_at: '2026-11-02T20:00:00Z', received_at: '2026-11-02T20:00:01Z', geographic_evaluation: not_evaluated }]
+        next_after_sequence: 1
+        has_more: false
+  responses:
+    CreatedSession:
+      description: Sesión nueva (201) o repetición idempotente (200); Cache-Control no-store
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [tracking_id, session, observation_credential, credential_status]
+            properties:
+              tracking_id: { type: string }
+              session: { $ref: '#/components/schemas/Session' }
+              observation_credential: { type: string, description: Vacío si no puede reemitirse }
+              credential_status: { type: string, enum: [issued, reissue_required, revoked] }
+          example: { tracking_id: t1, session: { id: t1, guide_id: g1, route_id: r1, trip_id: trip1, state: active, started_at: '2026-11-02T20:00:00Z', last_sequence: 0, max_observation_age: 900000000000, future_skew: 30000000000 }, observation_credential: '<entregado-sólo-al-crear>', credential_status: issued }
+    AcceptedObservation:
+      description: Nueva (201) o repetición exacta (200); Cache-Control no-store
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ObservationAcceptance' }
+    BadRequest: { description: Entrada inválida, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    Unauthorized: { description: Credencial ausente o inválida, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    Forbidden: { description: Capacidad o alcance insuficiente, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    NotFound: { description: No existe o no es visible para el consumidor, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    Conflict: { description: Clave/sequence conflictiva o antigua, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    TooLarge: { description: Cuerpo supera el límite, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    UnsupportedMedia: { description: Requiere application/json, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    Unprocessable: { description: Ruta no apta para seguimiento, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+    Unavailable: { description: Dependencia o resultado de escritura incierto; Retry-After 1, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }

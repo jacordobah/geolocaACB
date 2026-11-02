@@ -59,7 +59,7 @@ func (s *Store) CreateSession(ctx context.Context, session tracking.Session) err
 	if session.SnapshotHash != "" {
 		return tracking.ErrInvalid
 	}
-	result, err := createScript.Run(ctx, s.client, []string{sessionKey(session.ID), activeKey, snapshotKey(session.ID)}, session.ID, session.GuideID, session.RouteID, session.TripID, ms(session.StartedAt), keyID(session.ID), "", "0", "0", "", "").Text()
+	result, err := createScript.Run(ctx, s.client, []string{sessionKey(session.ID), activeKey, snapshotKey(session.ID), "", outboxKey, pendingEventsKey}, session.ID, session.GuideID, session.RouteID, session.TripID, ms(session.StartedAt), keyID(session.ID), "", "0", "0", "", "").Text()
 	if err != nil {
 		if ctx.Err() == nil {
 			confirmed, checkErr := s.confirmCreate(ctx, session, "", "", "", "0")
@@ -120,11 +120,24 @@ func (s *Store) provision(ctx context.Context, session tracking.Session, digest 
 	} else if session.SnapshotHash != "" {
 		return tracking.ErrInvalid
 	}
-	result, err := createScript.Run(ctx, s.client, []string{sessionKey(session.ID), activeKey, snapshotKey(session.ID)}, session.ID, session.GuideID, session.RouteID, session.TripID, ms(session.StartedAt), keyID(session.ID), digestHex, session.MaxObservationAge.Milliseconds(), session.FutureSkew.Milliseconds(), snapshotHash, snapshotPayload, transitionEnabled).Text()
+	event, err := tracking.NewLifecycleEvent(session, tracking.TrackingSessionActivated, session.StartedAt)
+	if err != nil {
+		return err
+	}
+	eventBody, err := json.Marshal(event)
+	if err != nil {
+		return tracking.ErrInvalid
+	}
+	planBody, err := s.prepareProvision(ctx, session, digest, snapshot)
+	if err != nil {
+		return err
+	}
+	result, err := createScript.Run(ctx, s.client, []string{sessionKey(session.ID), activeKey, snapshotKey(session.ID), eventKey(event.ID), outboxKey, pendingEventsKey}, session.ID, session.GuideID, session.RouteID, session.TripID, ms(session.StartedAt), keyID(session.ID), digestHex, session.MaxObservationAge.Milliseconds(), session.FutureSkew.Milliseconds(), snapshotHash, snapshotPayload, transitionEnabled, event.ID, string(eventBody), ms(event.OccurredAt)).Text()
 	if err != nil {
 		if ctx.Err() == nil {
 			confirmed, checkErr := s.confirmCreate(ctx, session, digestHex, snapshotHash, snapshotPayload, transitionEnabled)
 			if checkErr == nil && confirmed {
+				s.cleanProvision(ctx, session.ID, planBody)
 				return nil
 			}
 		}
@@ -132,6 +145,11 @@ func (s *Store) provision(ctx context.Context, session tracking.Session, digest 
 	}
 	switch result {
 	case "CREATED", "REPAIRED", "EXISTING":
+		confirmed, checkErr := s.confirmCreate(ctx, session, digestHex, snapshotHash, snapshotPayload, transitionEnabled)
+		if checkErr != nil || !confirmed {
+			return tracking.ErrUncertain
+		}
+		s.cleanProvision(ctx, session.ID, planBody)
 		return nil
 	case "CONFLICT":
 		return tracking.ErrConflict
@@ -162,6 +180,20 @@ func (s *Store) confirmCreate(ctx context.Context, session tracking.Session, dig
 	}
 	if digestHex != "" && (f["max_age_ms"] != strconv.FormatInt(session.MaxObservationAge.Milliseconds(), 10) || f["future_skew_ms"] != strconv.FormatInt(session.FutureSkew.Milliseconds(), 10)) {
 		return false, nil
+	}
+	if digestHex != "" {
+		if f["activation_event_done"] != "1" {
+			return false, nil
+		}
+		event, e := tracking.NewLifecycleEvent(session, tracking.TrackingSessionActivated, session.StartedAt)
+		if e != nil {
+			return false, e
+		}
+		if _, e = s.client.ZScore(ctx, pendingEventsKey, event.ID).Result(); e == nil {
+			return false, nil
+		} else if !errors.Is(e, redis.Nil) {
+			return false, e
+		}
 	}
 	if snapshotHash != "" && (snapshotValue.Err() != nil || snapshotValue.Val() != snapshotPayload) {
 		return false, nil
@@ -291,6 +323,13 @@ func decodeSession(fields map[string]string) (tracking.Session, error) {
 			return result, storeErr(err)
 		}
 		result.LastCapturedAt = &t
+	}
+	if raw := fields["max_expiry_ms"]; raw != "" {
+		t, err := fromMS(raw)
+		if err != nil {
+			return result, tracking.ErrUnavailable
+		}
+		result.LastPositionExpiresAt = &t
 	}
 	if raw := fields["finished_ms"]; raw != "" {
 		t, err := fromMS(raw)
@@ -487,12 +526,46 @@ func (s *Store) FinishSession(ctx context.Context, id string, at time.Time) erro
 	if !validID(id) || at.IsZero() || at.Nanosecond()%int(time.Millisecond) != 0 {
 		return tracking.ErrInvalid
 	}
-	result, err := finishScript.Run(ctx, s.client, []string{sessionKey(id), activeKey, historyKey(id), snapshotKey(id)}, ms(at), keyID(id)).Text()
+	fields, err := s.client.HGetAll(ctx, sessionKey(id)).Result()
 	if err != nil {
+		return storeErr(err)
+	}
+	if len(fields) == 0 {
+		return tracking.ErrNotFound
+	}
+	if fields["finished_ms"] != "" {
+		at, err = fromMS(fields["finished_ms"])
+		if err != nil {
+			return tracking.ErrUnavailable
+		}
+	}
+	session := tracking.Session{ID: fields["id"], TripID: fields["trip_id"], GuideID: fields["guide_id"], RouteID: fields["route_id"], SnapshotHash: fields["snapshot_hash"]}
+	if session.ID != id {
+		return tracking.ErrUnavailable
+	}
+	event, err := tracking.NewLifecycleEvent(session, tracking.TrackingSessionFinished, at)
+	if err != nil {
+		return tracking.ErrUnavailable
+	}
+	body, err := json.Marshal(event)
+	if err != nil {
+		return tracking.ErrUnavailable
+	}
+	result, err := finishScript.Run(ctx, s.client, []string{sessionKey(id), activeKey, historyKey(id), snapshotKey(id), eventKey(event.ID), outboxKey, pendingEventsKey, finishPendingKey}, ms(at), keyID(id), event.ID, string(body)).Text()
+	if err != nil {
+		if ctx.Err() == nil {
+			if confirmed, checkErr := s.confirmFinish(ctx, id, event.ID); checkErr == nil && confirmed {
+				return nil
+			}
+		}
 		return fmt.Errorf("%w: finish session: %v", tracking.ErrUncertain, err)
 	}
 	switch result {
 	case "FINISHED":
+		confirmed, checkErr := s.confirmFinish(ctx, id, event.ID)
+		if checkErr != nil || !confirmed {
+			return tracking.ErrUncertain
+		}
 		return nil
 	case "MISSING":
 		return tracking.ErrNotFound
@@ -501,6 +574,22 @@ func (s *Store) FinishSession(ctx context.Context, id string, at time.Time) erro
 	default:
 		return fmt.Errorf("%w: finish state %s", tracking.ErrUnavailable, result)
 	}
+}
+
+func (s *Store) confirmFinish(ctx context.Context, id, eventID string) (bool, error) {
+	pipe := s.client.Pipeline()
+	fields := pipe.HMGet(ctx, sessionKey(id), "state", "finish_event_done", "credential_hash")
+	active := pipe.ZScore(ctx, activeKey, keyID(id))
+	guard := pipe.ZScore(ctx, pendingEventsKey, eventID)
+	_, err := pipe.Exec(ctx)
+	if err != nil && !errors.Is(err, redis.Nil) {
+		return false, err
+	}
+	if fields.Err() != nil {
+		return false, nil
+	}
+	f := fields.Val()
+	return len(f) == 3 && f[0] == "finished" && f[1] == "1" && f[2] == nil && errors.Is(active.Err(), redis.Nil) && errors.Is(guard.Err(), redis.Nil), nil
 }
 
 func decodePosition(raw string) (tracking.Position, error) {
@@ -584,8 +673,8 @@ func (s *Store) Latest(ctx context.Context, id string) (tracking.Position, error
 
 type Page = tracking.Page
 
-// History scans at most four index entries per requested result. The caller
-// resumes after NextSequence; missing positions are pruned only as encountered.
+// History scans a bounded number of index entries. An exhausted scan returns
+// ErrPending instead of claiming that expired references represent live data.
 func (s *Store) History(ctx context.Context, id string, after int64, limit int64) (Page, error) {
 	if !validID(id) || after < 0 || limit < 1 || limit > 100 {
 		return Page{}, tracking.ErrInvalid
@@ -594,50 +683,77 @@ func (s *Store) History(ctx context.Context, id string, after int64, limit int64
 		return Page{}, err
 	}
 	page := Page{Positions: make([]tracking.Position, 0, limit), NextSequence: after}
-	maxScan := limit * 4
-	for scanned := int64(0); scanned < maxScan && int64(len(page.Positions)) < limit; {
-		batch := maxScan - scanned
-		if batch > 100 {
-			batch = 100
-		}
-		seqs, err := s.client.ZRangeByScore(ctx, historyKey(id), &redis.ZRangeBy{Min: "(" + strconv.FormatInt(page.NextSequence, 10), Max: "+inf", Offset: 0, Count: batch}).Result()
-		if err != nil {
-			return Page{}, storeErr(err)
-		}
-		if len(seqs) == 0 {
-			return page, nil
-		}
-		for _, raw := range seqs {
-			seq, err := strconv.ParseInt(raw, 10, 64)
+	budget := limit * 4
+	if budget < 128 {
+		budget = 128
+	}
+	cursor := after
+	// A result is returned only after all referenced positions needed to
+	// establish has_more have been inspected. This avoids false positives.
+	for phase := 0; phase < 2; phase++ {
+		remaining := budget
+		for remaining > 0 {
+			batch := remaining
+			if batch > 100 {
+				batch = 100
+			}
+			seqs, err := s.client.ZRangeByScore(ctx, historyKey(id), &redis.ZRangeBy{Min: "(" + strconv.FormatInt(cursor, 10), Max: "+inf", Count: batch}).Result()
 			if err != nil {
 				return Page{}, storeErr(err)
 			}
-			page.NextSequence = seq
-			scanned++
-			p, err := s.ReadPosition(ctx, id, seq)
-			if errors.Is(err, tracking.ErrNotFound) {
-				if err := s.client.ZRem(ctx, historyKey(id), raw).Err(); err != nil {
-					return Page{}, storeErr(err)
+			if len(seqs) == 0 {
+				return page, nil
+			}
+			for _, raw := range seqs {
+				seq, err := strconv.ParseInt(raw, 10, 64)
+				if err != nil || seq <= cursor {
+					return Page{}, tracking.ErrUnavailable
 				}
-				continue
+				cursor = seq
+				remaining--
+				position, err := s.ReadPosition(ctx, id, seq)
+				if errors.Is(err, tracking.ErrNotFound) {
+					if err = s.client.ZRem(ctx, historyKey(id), raw).Err(); err != nil {
+						return Page{}, storeErr(err)
+					}
+					continue
+				}
+				if err != nil {
+					return Page{}, err
+				}
+				if phase == 1 {
+					page.HasMore = true
+					return page, nil
+				}
+				page.Positions = append(page.Positions, position)
+				page.NextSequence = seq
+				if int64(len(page.Positions)) == limit {
+					break
+				}
 			}
-			if err != nil {
-				return Page{}, err
-			}
-			page.Positions = append(page.Positions, p)
-			if int64(len(page.Positions)) == limit {
+			if phase == 0 && int64(len(page.Positions)) == limit {
 				break
 			}
+			if int64(len(seqs)) < batch {
+				return page, nil
+			}
 		}
-		if int64(len(seqs)) < batch && int64(len(page.Positions)) < limit {
-			return page, nil
+		if remaining == 0 {
+			next, err := s.client.ZRangeByScore(ctx, historyKey(id), &redis.ZRangeBy{Min: "(" + strconv.FormatInt(cursor, 10), Max: "+inf", Count: 1}).Result()
+			if err != nil {
+				return Page{}, storeErr(err)
+			}
+			if len(next) == 0 {
+				return page, nil
+			}
+		}
+		if phase == 0 && int64(len(page.Positions)) < limit {
+			return Page{}, tracking.ErrPending
+		}
+		if phase == 1 {
+			return Page{}, tracking.ErrPending
 		}
 	}
-	count, err := s.client.ZCount(ctx, historyKey(id), "("+strconv.FormatInt(page.NextSequence, 10), "+inf").Result()
-	if err != nil {
-		return Page{}, storeErr(err)
-	}
-	page.HasMore = count > 0
 	return page, nil
 }
 

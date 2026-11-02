@@ -51,12 +51,23 @@ func deliveryFixture(t *testing.T) (*Store, *redis.Client, tracking.Event, strin
 	}
 	var event tracking.Event
 	for _, candidate := range events {
-		if candidate.TrackingID == id {
+		if candidate.TrackingID == id && candidate.Sequence > 0 {
 			event = candidate
 		}
 	}
 	if event.ID == "" {
 		t.Fatal("fixture event missing")
+	}
+	// These tests exercise delivery of the geographic event specifically.
+	activation, err := tracking.NewLifecycleEvent(session, tracking.TrackingSessionActivated, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.ZRem(ctx, outboxKey, activation.ID).Err(); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Del(ctx, eventKey(activation.ID)).Err(); err != nil {
+		t.Fatal(err)
 	}
 	t.Cleanup(func() {
 		_ = client.Del(ctx, sessionKey(id), snapshotKey(id), historyKey(id), positionKey(id, 1), eventKey(event.ID), deliveryKey(event.ID)).Err()

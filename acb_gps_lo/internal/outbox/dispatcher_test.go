@@ -33,6 +33,11 @@ func fixture(t *testing.T) (*redisstore.Store, *redis.Client, tracking.Event) {
 	}
 	// DB 1 separates worker tests from the package's existing Redis fixtures.
 	client := redis.NewClient(&redis.Options{Addr: addr, DB: 1})
+	if os.Getenv("GPS_TEST_REDIS_ISOLATED") == "1" {
+		if err := client.FlushDB(context.Background()).Err(); err != nil {
+			t.Fatal(err)
+		}
+	}
 	t.Cleanup(func() { _ = client.Close() })
 	store, err := redisstore.New(client, 24*time.Hour, 5*time.Minute)
 	if err != nil {

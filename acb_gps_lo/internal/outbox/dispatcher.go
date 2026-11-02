@@ -91,6 +91,36 @@ func recoverLoop(ctx context.Context, store *redisstore.Store, logger *slog.Logg
 		if ctx.Err() != nil {
 			return
 		}
+		provisions, provisionErr := store.PendingProvisions(ctx, 20)
+		if provisionErr != nil {
+			logger.Error("provision recovery query failed", "error", provisionErr)
+		} else {
+			for _, id := range provisions {
+				if ctx.Err() != nil {
+					return
+				}
+				if err := store.RecoverProvision(ctx, id); err != nil {
+					deferErr := store.DeferProvision(ctx, id, time.Minute)
+					logger.Error("provision recovery failed", "tracking_id", id, "error", err, "defer_error", deferErr)
+				} else {
+					logger.Info("provision recovered", "tracking_id", id)
+				}
+			}
+		}
+		finishes, finishErr := store.PendingFinishes(ctx, 20)
+		if finishErr != nil {
+			logger.Error("finish recovery query failed", "error", finishErr)
+		} else {
+			for _, id := range finishes {
+				if ctx.Err() != nil {
+					return
+				}
+				if err := store.RecoverFinish(ctx, id); err != nil {
+					deferErr := store.DeferFinish(ctx, id, 5*time.Second)
+					logger.Error("finish recovery failed", "tracking_id", id, "error", err, "defer_error", deferErr)
+				}
+			}
+		}
 		var err error
 		cursor, err = store.DiscoverPending(ctx, cursor, 50)
 		if err != nil {

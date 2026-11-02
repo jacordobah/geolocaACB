@@ -42,11 +42,19 @@ func (s *Store) CleanPendingEvents(ctx context.Context, limit int64) (int, error
 			cleaned++
 			continue
 		}
-		pending, err := s.client.HExists(ctx, sessionKey(event.TrackingID), "pending_sequence").Result()
-		if err != nil {
+		field := "pending_sequence"
+		switch event.Type {
+		case tracking.TrackingSessionActivated:
+			field = "activation_event_done"
+		case tracking.TrackingSessionFinished:
+			field = "finish_event_done"
+		}
+		value, err := s.client.HGet(ctx, sessionKey(event.TrackingID), field).Result()
+		if err != nil && err != redis.Nil {
 			return cleaned, storeErr(err)
 		}
-		if !pending {
+		clear := field == "pending_sequence" && value == "" || field != "pending_sequence" && value == "1"
+		if clear {
 			if err := s.client.ZRem(ctx, pendingEventsKey, id).Err(); err != nil {
 				return cleaned, storeErr(err)
 			}

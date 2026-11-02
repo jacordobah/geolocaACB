@@ -47,6 +47,10 @@ func TestModelValidationAndSerialization(t *testing.T) {
 	if !errors.Is(p.Validate(), ErrInvalid) {
 		t.Fatal("zero sequence accepted")
 	}
+	p.Sequence = 1 << 53
+	if !errors.Is(p.Validate(), ErrInvalid) {
+		t.Fatal("sequence beyond exact Redis/Lua integer range accepted")
+	}
 	p.Sequence = 1
 	p.SessionID = " bad "
 	if !errors.Is(p.Validate(), ErrInvalid) {
