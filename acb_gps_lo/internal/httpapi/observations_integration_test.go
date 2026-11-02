@@ -345,3 +345,73 @@ func TestRedisHTTPGeographicSnapshotLifecycle(t *testing.T) {
 		t.Fatalf("closed session accepted HTTP %d", status)
 	}
 }
+
+func TestRedisHTTPGeographicArrivalEvent(t *testing.T) {
+	app := setup(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	pointID, resolved, verified, version := "synthetic-PE01", "resolved", "verified", "synthetic-v1"
+	route := routes.Route{ID: "synthetic-event-route", Name: "Synthetic event route", GeometryVersion: &version, AssociationStatus: &verified,
+		Geometry:      geo.LineString{Coordinates: []geo.Coordinate{{Longitude: -74.1, Latitude: 4.6}, {Longitude: -74.1005, Latitude: 4.6}}},
+		MeetingPoints: []routes.MeetingPoint{{ID: pointID, Name: "PE01", Kind: "meeting_point", Location: geo.Coordinate{Longitude: -74.1, Latitude: 4.6}}},
+		Endpoints:     routes.Endpoints{Status: &resolved, FirstPointID: &pointID, Start: routes.Endpoint{PointID: &pointID}, End: routes.Endpoint{PointID: &pointID}},
+	}
+	policy := &tracking.TransitionPolicy{ArrivalObservations: 2, ArrivalDwell: time.Second, DeviationObservations: 2, DeviationDwell: time.Second, RecoveryObservations: 2, RecoveryDwell: time.Second, MaxSampleGap: 5 * time.Second}
+	snapshot, err := tracking.BuildSnapshotWithTransitions(route, tracking.GeographicPolicy{CorridorRadiusMeters: 30, PointRadiusMeters: 20, MaxAccuracyMeters: 25}, policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := fmt.Sprintf("test-i7-http-%d", now.UnixNano())
+	session := tracking.Session{ID: id, GuideID: "synthetic-guide", TripID: "synthetic-trip", RouteID: route.ID, State: tracking.Active, StartedAt: now, MaxObservationAge: 15 * time.Minute, FutureSkew: 30 * time.Second, SnapshotHash: snapshot.SnapshotHash}
+	secret := bytes.Repeat([]byte{86}, 32)
+	digest := sha256.Sum256(secret)
+	token := base64.RawURLEncoding.EncodeToString(secret)
+	encodedID := base64.RawURLEncoding.EncodeToString([]byte(id))
+	t.Cleanup(func() {
+		events, _ := app.store.PendingEvents(ctx, 0, 100)
+		for _, event := range events {
+			if event.TrackingID == id {
+				_ = app.client.Del(ctx, "gps:event:"+event.ID).Err()
+				_ = app.client.ZRem(ctx, "gps:outbox:due", event.ID).Err()
+			}
+		}
+		_ = app.client.Del(ctx, "gps:session:"+encodedID, "gps:snapshot:"+encodedID, "gps:history:"+encodedID, "gps:position:"+encodedID+":1", "gps:position:"+encodedID+":2").Err()
+		_ = app.client.ZRem(ctx, "gps:active:sessions", encodedID).Err()
+	})
+	if err := app.store.ProvisionSnapshot(ctx, session, digest, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	url := app.http.URL + "/api/v1/tracking-sessions/" + id + "/observations"
+	status, first := post(t, url, token, body(1, 4.6, now))
+	if status != 201 || first["geographic_evaluation"] == "not_evaluated" {
+		t.Fatalf("first HTTP response %d %+v", status, first)
+	}
+	status, second := post(t, url, token, body(2, 4.6, now.Add(time.Second)))
+	if status != 201 || second["acceptance"] != "accepted" {
+		t.Fatalf("arrival HTTP response %d %+v", status, second)
+	}
+	status, retry := post(t, url, token, body(2, 4.6, now.Add(time.Second)))
+	if status != 200 || retry["acceptance"] != "replayed" || retry["expires_at"] != second["expires_at"] {
+		t.Fatalf("HTTP replay %d %+v", status, retry)
+	}
+	stored, err := app.store.Session(ctx, id)
+	if err != nil || stored.FirstArrival == nil || stored.FirstArrival.Sequence != 2 {
+		t.Fatalf("first arrival missing: %+v %v", stored, err)
+	}
+	events, err := app.store.PendingEvents(ctx, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, event := range events {
+		if event.TrackingID == id {
+			count++
+			if event.Type != tracking.FirstMeetingPointArrival {
+				t.Fatalf("wrong event %+v", event)
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("HTTP arrival produced %d events", count)
+	}
+}

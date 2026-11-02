@@ -26,6 +26,9 @@ type Repository interface {
 	Session(context.Context, string) (Session, error)
 	FinishSession(context.Context, string, time.Time) error
 	Accept(context.Context, Position) (Acceptance, error)
+	GeographicState(context.Context, string) (GeographicState, error)
+	AcceptTransition(context.Context, Position, TransitionPlan) (Acceptance, error)
+	RecoverPending(context.Context, string) error
 	ReadPosition(context.Context, string, int64) (Position, error)
 	PositionExpiry(context.Context, string, int64) (time.Time, error)
 	Latest(context.Context, string) (Position, error)
@@ -77,6 +80,12 @@ func (s *Service) Provision(ctx context.Context, guideID, tripID, routeID string
 // ProvisionGeographic is internal only. Python's present response can be
 // queried and assessed, but cannot yet prove operational eligibility.
 func (s *Service) ProvisionGeographic(ctx context.Context, reader routes.Reader, guideID, tripID, routeID string, policy GeographicPolicy) (Session, string, error) {
+	return s.ProvisionGeographicWithTransitions(ctx, reader, guideID, tripID, routeID, policy, nil)
+}
+
+// ProvisionGeographicWithTransitions is internal only. The temporal policy
+// must be explicitly authorized; no public provisioning endpoint exists.
+func (s *Service) ProvisionGeographicWithTransitions(ctx context.Context, reader routes.Reader, guideID, tripID, routeID string, policy GeographicPolicy, transitions *TransitionPolicy) (Session, string, error) {
 	if reader == nil || !ValidID(routeID) {
 		return Session{}, "", ErrInvalid
 	}
@@ -87,7 +96,7 @@ func (s *Service) ProvisionGeographic(ctx context.Context, reader routes.Reader,
 	if route.ID != routeID {
 		return Session{}, "", ErrRouteIneligible
 	}
-	snapshot, err := BuildSnapshot(route, policy)
+	snapshot, err := BuildSnapshotWithTransitions(route, policy, transitions)
 	if err != nil {
 		return Session{}, "", err
 	}
@@ -214,46 +223,26 @@ func (s *Service) Receive(ctx context.Context, id, token string, input Observati
 	// A geographic replay always returns its stored evaluation. This also
 	// prevents a later change in implementation from rewriting past results.
 	if session.SnapshotHash != "" {
-		stored, err := s.repo.ReadPosition(ctx, id, input.Sequence)
-		if err == nil {
-			originalHash, hashErr := stored.InputFingerprint()
-			retryHash, retryErr := position.InputFingerprint()
-			if hashErr != nil || retryErr != nil {
-				return Acceptance{}, ErrUncertain
-			}
-			if originalHash != retryHash {
-				return Acceptance{}, ErrConflict
-			}
-			expiry, err := s.repo.PositionExpiry(ctx, id, input.Sequence)
-			if err != nil {
-				return Acceptance{}, ErrUncertain
-			}
-			return Acceptance{Position: stored, Duplicate: true, ExpiresAt: expiry}, nil
-		}
-		if !errors.Is(err, ErrNotFound) {
+		replayed, found, err := s.replay(ctx, position)
+		if err != nil {
 			return Acceptance{}, err
+		}
+		if found {
+			return replayed, nil
 		}
 	}
 	if position.CapturedAt.Before(now.Add(-session.MaxObservationAge)) || position.CapturedAt.After(now.Add(session.FutureSkew)) {
 		// An already accepted observation may be replayed after it becomes old.
-		stored, err := s.repo.ReadPosition(ctx, id, input.Sequence)
-		if err == nil {
-			originalHash, a := stored.InputFingerprint()
-			retryHash, b := position.InputFingerprint()
-			if a == nil && b == nil && originalHash == retryHash {
-				expiry, expiryErr := s.repo.PositionExpiry(ctx, id, input.Sequence)
-				if expiryErr != nil {
-					return Acceptance{}, fmt.Errorf("%w: replay expiry unavailable", ErrUncertain)
-				}
-				return Acceptance{Position: stored, Duplicate: true, ExpiresAt: expiry}, nil
-			}
-			return Acceptance{}, ErrConflict
-		}
-		if !errors.Is(err, ErrNotFound) {
+		replayed, found, err := s.replay(ctx, position)
+		if err != nil {
 			return Acceptance{}, err
+		}
+		if found {
+			return replayed, nil
 		}
 		return Acceptance{}, ErrStale
 	}
+	var transitionSnapshot *GeographicSnapshot
 	if session.SnapshotHash != "" {
 		cached, ok := s.prepared.Load(id)
 		if !ok {
@@ -278,6 +267,85 @@ func (s *Service) Receive(ctx context.Context, id, token string, input Observati
 		if err != nil {
 			return Acceptance{}, err
 		}
+		if value.snapshot.TransitionPolicy != nil {
+			transitionSnapshot = &value.snapshot
+		}
+	}
+	if transitionSnapshot != nil {
+		for attempt := 0; attempt < 8; attempt++ {
+			state, err := s.repo.GeographicState(ctx, id)
+			if errors.Is(err, ErrPending) {
+				if err := s.repo.RecoverPending(ctx, id); err != nil {
+					return Acceptance{}, err
+				}
+				continue
+			}
+			if err != nil {
+				return Acceptance{}, err
+			}
+			position.FirstArrival = nil
+			plan, err := Advance(*transitionSnapshot, state, session, position)
+			if errors.Is(err, ErrStale) {
+				replayed, found, replayErr := s.replay(ctx, position)
+				if replayErr != nil {
+					return Acceptance{}, replayErr
+				}
+				if found {
+					return replayed, nil
+				}
+			}
+			if err != nil {
+				return Acceptance{}, err
+			}
+			position.FirstArrival = plan.FirstArrival
+			accepted, err := s.repo.AcceptTransition(ctx, position, plan)
+			if errors.Is(err, ErrStateChanged) {
+				continue
+			}
+			if errors.Is(err, ErrStale) {
+				replayed, found, replayErr := s.replay(ctx, position)
+				if replayErr != nil {
+					return Acceptance{}, replayErr
+				}
+				if found {
+					return replayed, nil
+				}
+			}
+			return accepted, err
+		}
+		return Acceptance{}, ErrPending
 	}
 	return s.repo.Accept(ctx, position)
+}
+
+func (s *Service) replay(ctx context.Context, requested Position) (Acceptance, bool, error) {
+	stored, err := s.repo.ReadPosition(ctx, requested.SessionID, requested.Sequence)
+	if errors.Is(err, ErrPending) {
+		if err := s.repo.RecoverPending(ctx, requested.SessionID); err != nil {
+			return Acceptance{}, false, err
+		}
+		stored, err = s.repo.ReadPosition(ctx, requested.SessionID, requested.Sequence)
+	}
+	if errors.Is(err, ErrNotFound) {
+		return Acceptance{}, false, nil
+	}
+	if err != nil {
+		return Acceptance{}, false, err
+	}
+	originalHash, err := stored.InputFingerprint()
+	if err != nil {
+		return Acceptance{}, false, ErrUncertain
+	}
+	retryHash, err := requested.InputFingerprint()
+	if err != nil {
+		return Acceptance{}, false, ErrUncertain
+	}
+	if originalHash != retryHash {
+		return Acceptance{}, false, ErrConflict
+	}
+	expiry, err := s.repo.PositionExpiry(ctx, requested.SessionID, requested.Sequence)
+	if err != nil {
+		return Acceptance{}, false, ErrUncertain
+	}
+	return Acceptance{Position: stored, Duplicate: true, ExpiresAt: expiry}, true, nil
 }

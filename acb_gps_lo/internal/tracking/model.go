@@ -21,6 +21,7 @@ var (
 	ErrUnavailable  = errors.New("tracking store unavailable")
 	ErrUncertain    = errors.New("tracking write outcome uncertain")
 	ErrUnauthorized = errors.New("tracking credential not authorized")
+	ErrStateChanged = errors.New("geographic state advanced concurrently")
 )
 
 const MinRetention = 24 * time.Hour
@@ -50,9 +51,19 @@ type Session struct {
 }
 
 type Arrival struct {
-	MeetingPointID string    `json:"meeting_point_id"`
-	CapturedAt     time.Time `json:"captured_at"`
-	Sequence       int64     `json:"sequence"`
+	MeetingPointID string     `json:"meeting_point_id"`
+	CapturedAt     time.Time  `json:"captured_at"`
+	Sequence       int64      `json:"sequence"`
+	ObservedFrom   *time.Time `json:"observed_from,omitempty"`
+	DistanceMeters *float64   `json:"distance_meters,omitempty"`
+	AccuracyMeters *float64   `json:"accuracy_meters,omitempty"`
+}
+
+func (a Arrival) Validate() error {
+	if !validID(a.MeetingPointID) || a.Sequence < 1 || !validTime(a.CapturedAt) || a.ObservedFrom != nil && (!validTime(*a.ObservedFrom) || a.ObservedFrom.After(a.CapturedAt)) || a.DistanceMeters != nil && !finiteNonnegative(*a.DistanceMeters) || a.AccuracyMeters != nil && !finiteNonnegative(*a.AccuracyMeters) {
+		return fmt.Errorf("%w: first arrival evidence", ErrInvalid)
+	}
+	return nil
 }
 
 type GeographicResult struct {
@@ -160,11 +171,25 @@ func (p Position) Validate() error {
 	if p.IdempotencyVersion == 2 && p.Geographic == nil {
 		return fmt.Errorf("%w: missing geographic result", ErrInvalid)
 	}
-	if p.IdempotencyVersion == 2 && p.FirstArrival != nil {
-		return fmt.Errorf("%w: first arrival is not enabled", ErrInvalid)
-	}
-	if p.FirstArrival != nil && (!validID(p.FirstArrival.MeetingPointID) || p.FirstArrival.Sequence != p.Sequence || !p.FirstArrival.CapturedAt.Equal(p.CapturedAt) || p.Geographic == nil || p.Geographic.MeetingPointID == nil || *p.Geographic.MeetingPointID != p.FirstArrival.MeetingPointID) {
-		return fmt.Errorf("%w: first arrival", ErrInvalid)
+	if p.FirstArrival != nil {
+		a := p.FirstArrival
+		if a.Validate() != nil || a.Sequence != p.Sequence || !a.CapturedAt.Equal(p.CapturedAt) || p.Geographic == nil {
+			return fmt.Errorf("%w: first arrival", ErrInvalid)
+		}
+		if p.IdempotencyVersion == 2 {
+			found := false
+			for _, point := range p.Geographic.MeetingPoints {
+				if point.ID == a.MeetingPointID && point.Status == "inside" {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return fmt.Errorf("%w: first arrival evidence", ErrInvalid)
+			}
+		} else if p.Geographic.MeetingPointID == nil || *p.Geographic.MeetingPointID != a.MeetingPointID {
+			return fmt.Errorf("%w: first arrival", ErrInvalid)
+		}
 	}
 	return nil
 }

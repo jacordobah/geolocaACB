@@ -37,6 +37,9 @@ func historyKey(id string) string  { return "gps:history:" + keyID(id) }
 func snapshotKey(id string) string { return "gps:snapshot:" + keyID(id) }
 
 const activeKey = "gps:active:sessions"
+const outboxKey = "gps:outbox:due"
+
+func eventKey(id string) string { return "gps:event:" + id }
 
 func ms(t time.Time) string { return strconv.FormatInt(t.UTC().UnixMilli(), 10) }
 func fromMS(raw string) (time.Time, error) {
@@ -58,7 +61,7 @@ func (s *Store) CreateSession(ctx context.Context, session tracking.Session) err
 	result, err := createScript.Run(ctx, s.client, []string{sessionKey(session.ID), activeKey, snapshotKey(session.ID)}, session.ID, session.GuideID, session.RouteID, session.TripID, ms(session.StartedAt), keyID(session.ID), "", "0", "0", "", "").Text()
 	if err != nil {
 		if ctx.Err() == nil {
-			confirmed, checkErr := s.confirmCreate(ctx, session, "", "", "")
+			confirmed, checkErr := s.confirmCreate(ctx, session, "", "", "", "0")
 			if checkErr == nil && confirmed {
 				return nil
 			}
@@ -102,8 +105,12 @@ func (s *Store) provision(ctx context.Context, session tracking.Session, digest 
 	}
 	digestHex := hex.EncodeToString(digest[:])
 	snapshotHash, snapshotPayload := "", ""
+	transitionEnabled := "0"
 	if snapshot != nil {
 		snapshotHash = snapshot.SnapshotHash
+		if snapshot.TransitionPolicy != nil {
+			transitionEnabled = "1"
+		}
 		body, err := json.Marshal(snapshot)
 		if err != nil {
 			return tracking.ErrInvalid
@@ -112,10 +119,10 @@ func (s *Store) provision(ctx context.Context, session tracking.Session, digest 
 	} else if session.SnapshotHash != "" {
 		return tracking.ErrInvalid
 	}
-	result, err := createScript.Run(ctx, s.client, []string{sessionKey(session.ID), activeKey, snapshotKey(session.ID)}, session.ID, session.GuideID, session.RouteID, session.TripID, ms(session.StartedAt), keyID(session.ID), digestHex, session.MaxObservationAge.Milliseconds(), session.FutureSkew.Milliseconds(), snapshotHash, snapshotPayload).Text()
+	result, err := createScript.Run(ctx, s.client, []string{sessionKey(session.ID), activeKey, snapshotKey(session.ID)}, session.ID, session.GuideID, session.RouteID, session.TripID, ms(session.StartedAt), keyID(session.ID), digestHex, session.MaxObservationAge.Milliseconds(), session.FutureSkew.Milliseconds(), snapshotHash, snapshotPayload, transitionEnabled).Text()
 	if err != nil {
 		if ctx.Err() == nil {
-			confirmed, checkErr := s.confirmCreate(ctx, session, digestHex, snapshotHash, snapshotPayload)
+			confirmed, checkErr := s.confirmCreate(ctx, session, digestHex, snapshotHash, snapshotPayload, transitionEnabled)
 			if checkErr == nil && confirmed {
 				return nil
 			}
@@ -136,7 +143,7 @@ func (s *Store) provision(ctx context.Context, session tracking.Session, digest 
 
 // confirmCreate is used only after a transport/Redis error. It never infers
 // success from one key: the full session and active index must agree.
-func (s *Store) confirmCreate(ctx context.Context, session tracking.Session, digestHex, snapshotHash, snapshotPayload string) (bool, error) {
+func (s *Store) confirmCreate(ctx context.Context, session tracking.Session, digestHex, snapshotHash, snapshotPayload, transitionEnabled string) (bool, error) {
 	pipe := s.client.Pipeline()
 	fields := pipe.HGetAll(ctx, sessionKey(session.ID))
 	score := pipe.ZScore(ctx, activeKey, keyID(session.ID))
@@ -149,7 +156,7 @@ func (s *Store) confirmCreate(ctx context.Context, session tracking.Session, dig
 		return false, nil
 	}
 	f := fields.Val()
-	if f["id"] != session.ID || f["guide_id"] != session.GuideID || f["route_id"] != session.RouteID || f["trip_id"] != session.TripID || f["started_ms"] != ms(session.StartedAt) || f["credential_hash"] != digestHex || f["state"] != "active" || f["provision_complete"] != "1" || f["snapshot_hash"] != snapshotHash {
+	if f["id"] != session.ID || f["guide_id"] != session.GuideID || f["route_id"] != session.RouteID || f["trip_id"] != session.TripID || f["started_ms"] != ms(session.StartedAt) || f["credential_hash"] != digestHex || f["state"] != "active" || f["provision_complete"] != "1" || f["snapshot_hash"] != snapshotHash || (f["transition_enabled"] != transitionEnabled && !(transitionEnabled == "0" && f["transition_enabled"] == "")) {
 		return false, nil
 	}
 	if digestHex != "" && (f["max_age_ms"] != strconv.FormatInt(session.MaxObservationAge.Milliseconds(), 10) || f["future_skew_ms"] != strconv.FormatInt(session.FutureSkew.Milliseconds(), 10)) {
@@ -296,6 +303,9 @@ func decodeSession(fields map[string]string) (tracking.Session, error) {
 		if err := json.Unmarshal([]byte(raw), &arrival); err != nil {
 			return result, storeErr(err)
 		}
+		if err := arrival.Validate(); err != nil {
+			return result, tracking.ErrUnavailable
+		}
 		result.FirstArrival = &arrival
 	}
 	if raw := fields["max_age_ms"]; raw != "" {
@@ -318,6 +328,10 @@ func decodeSession(fields map[string]string) (tracking.Session, error) {
 type Acceptance = tracking.Acceptance
 
 func (s *Store) Accept(ctx context.Context, position tracking.Position) (Acceptance, error) {
+	return s.accept(ctx, position, nil, false)
+}
+
+func (s *Store) accept(ctx context.Context, position tracking.Position, plan *tracking.TransitionPlan, recovering bool) (Acceptance, error) {
 	fingerprint, body, err := position.Fingerprint()
 	if err != nil {
 		return Acceptance{}, err
@@ -344,12 +358,27 @@ func (s *Store) Accept(ctx context.Context, position tracking.Position) (Accepta
 		checksum := sha256.Sum256(body)
 		payload = fingerprint + "|" + hex.EncodeToString(checksum[:]) + "|" + string(body)
 	}
-	result, err := acceptScript.Run(ctx, s.client, keys, position.Sequence, ms(position.CapturedAt), ms(position.ReceivedAt), s.retention.Milliseconds(), s.margin.Milliseconds(), fingerprint, payload, arrival, keyID(position.SessionID), snapshotHash).Text()
+	expected, planJSON := "", ""
+	if plan != nil {
+		expected = strconv.FormatInt(plan.ExpectedSequence, 10)
+		planJSON, err = encodePlan(*plan)
+		if err != nil {
+			return Acceptance{}, err
+		}
+	}
+	keys = append(keys, outboxKey)
+	result, err := acceptScript.Run(ctx, s.client, keys, position.Sequence, ms(position.CapturedAt), ms(position.ReceivedAt), s.retention.Milliseconds(), s.margin.Milliseconds(), fingerprint, payload, arrival, keyID(position.SessionID), snapshotHash, expected, planJSON).Text()
 	if err != nil {
 		// A broken connection may hide a committed write. Never report success
 		// unless all three durable Redis structures agree and no repair is pending.
 		if ctx.Err() == nil {
 			confirmed, checkErr := s.confirm(ctx, position, fingerprint)
+			if confirmed && plan != nil {
+				confirmed, checkErr = s.confirmTransition(ctx, position, *plan)
+			}
+			if recovering {
+				confirmed = false
+			}
 			if checkErr == nil && confirmed {
 				stored, readErr := s.ReadPosition(ctx, position.SessionID, position.Sequence)
 				if readErr == nil {
@@ -364,11 +393,15 @@ func (s *Store) Accept(ctx context.Context, position tracking.Position) (Accepta
 	}
 	switch result {
 	case "ACCEPTED":
+		stored, err := s.position(ctx, position.SessionID, position.Sequence)
+		if err != nil {
+			return Acceptance{}, fmt.Errorf("%w: accepted position cannot be verified", tracking.ErrUncertain)
+		}
 		expiry, err := s.PositionExpiry(ctx, position.SessionID, position.Sequence)
 		if err != nil {
 			return Acceptance{}, fmt.Errorf("%w: position expiry cannot be verified", tracking.ErrUncertain)
 		}
-		return Acceptance{Position: position, ExpiresAt: expiry}, nil
+		return Acceptance{Position: stored, ExpiresAt: expiry}, nil
 	case "DUPLICATE":
 		stored, err := s.position(ctx, position.SessionID, position.Sequence)
 		if err != nil {
@@ -387,6 +420,8 @@ func (s *Store) Accept(ctx context.Context, position tracking.Position) (Accepta
 		return Acceptance{}, tracking.ErrClosed
 	case "PENDING":
 		return Acceptance{}, tracking.ErrPending
+	case "RETRY":
+		return Acceptance{}, tracking.ErrStateChanged
 	case "MISSING":
 		return Acceptance{}, tracking.ErrNotFound
 	case "INVALID":
@@ -399,6 +434,15 @@ func (s *Store) Accept(ctx context.Context, position tracking.Position) (Accepta
 func (s *Store) ReadPosition(ctx context.Context, id string, seq int64) (tracking.Position, error) {
 	if !validID(id) || seq < 1 {
 		return tracking.Position{}, tracking.ErrInvalid
+	}
+	// A position may already exist while its geographic state or outbox is
+	// still pending repair. Never expose it as a completed replay.
+	pending, err := s.client.HGet(ctx, sessionKey(id), "pending_sequence").Result()
+	if err != nil && !errors.Is(err, redis.Nil) {
+		return tracking.Position{}, storeErr(err)
+	}
+	if pending != "" {
+		return tracking.Position{}, tracking.ErrPending
 	}
 	return s.position(ctx, id, seq)
 }
@@ -524,7 +568,7 @@ func (s *Store) Latest(ctx context.Context, id string) (tracking.Position, error
 		if err != nil {
 			return tracking.Position{}, storeErr(err)
 		}
-		p, err := s.position(ctx, id, seq)
+		p, err := s.ReadPosition(ctx, id, seq)
 		if errors.Is(err, tracking.ErrNotFound) {
 			_ = s.client.ZRem(ctx, historyKey(id), raw).Err()
 			continue
@@ -569,7 +613,7 @@ func (s *Store) History(ctx context.Context, id string, after int64, limit int64
 			}
 			page.NextSequence = seq
 			scanned++
-			p, err := s.position(ctx, id, seq)
+			p, err := s.ReadPosition(ctx, id, seq)
 			if errors.Is(err, tracking.ErrNotFound) {
 				if err := s.client.ZRem(ctx, historyKey(id), raw).Err(); err != nil {
 					return Page{}, storeErr(err)

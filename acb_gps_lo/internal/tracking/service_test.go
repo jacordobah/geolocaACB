@@ -28,6 +28,14 @@ type fakeRepository struct {
 	snapshot          GeographicSnapshot
 }
 
+func (f *fakeRepository) GeographicState(context.Context, string) (GeographicState, error) {
+	return GeographicState{}, ErrNotFound
+}
+func (f *fakeRepository) AcceptTransition(context.Context, Position, TransitionPlan) (Acceptance, error) {
+	return Acceptance{}, ErrUnavailable
+}
+func (f *fakeRepository) RecoverPending(context.Context, string) error { return ErrPending }
+
 func (f *fakeRepository) ProvisionSnapshot(ctx context.Context, s Session, d [32]byte, snapshot GeographicSnapshot) error {
 	f.snapshot = snapshot
 	return f.Provision(ctx, s, d)

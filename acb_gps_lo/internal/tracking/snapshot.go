@@ -34,10 +34,11 @@ func (p GeographicPolicy) Validate() error {
 }
 
 type GeographicSnapshot struct {
-	Route         routes.Route     `json:"route"`
-	Policy        GeographicPolicy `json:"policy"`
-	EngineVersion string           `json:"engine_version"`
-	Limits        GeometryLimits   `json:"geometry_limits"`
+	Route            routes.Route      `json:"route"`
+	Policy           GeographicPolicy  `json:"policy"`
+	TransitionPolicy *TransitionPolicy `json:"transition_policy,omitempty"`
+	EngineVersion    string            `json:"engine_version"`
+	Limits           GeometryLimits    `json:"geometry_limits"`
 	// GeometryFingerprint is a locally calculated content hash, not a version
 	// issued by Python. SnapshotHash also binds the fixed policy.
 	GeometryFingerprint string `json:"geometry_fingerprint"`
@@ -52,8 +53,19 @@ type GeometryLimits struct {
 }
 
 func BuildSnapshot(route routes.Route, policy GeographicPolicy) (GeographicSnapshot, error) {
+	return BuildSnapshotWithTransitions(route, policy, nil)
+}
+
+// BuildSnapshotWithTransitions binds explicit temporal rules to the immutable
+// geographic reference. A nil policy preserves pre-Increment-7 snapshots.
+func BuildSnapshotWithTransitions(route routes.Route, policy GeographicPolicy, transitions *TransitionPolicy) (GeographicSnapshot, error) {
 	if err := policy.Validate(); err != nil {
 		return GeographicSnapshot{}, err
+	}
+	if transitions != nil {
+		if err := transitions.Validate(); err != nil {
+			return GeographicSnapshot{}, err
+		}
 	}
 	if !ValidID(route.ID) || strings.TrimSpace(route.Name) == "" {
 		return GeographicSnapshot{}, ErrRouteIneligible
@@ -109,12 +121,17 @@ func BuildSnapshot(route routes.Route, policy GeographicPolicy) (GeographicSnaps
 	}
 	routeHash := sha256.Sum256(geographicContent)
 	s := GeographicSnapshot{Route: detached, Policy: policy, EngineVersion: "short-arc-v1", Limits: GeometryLimits{geo.MaxSupportedSegmentMeters, geo.MaxSupportedRouteMeters, geo.MaxSupportedAbsLatitude, geo.MaxRouteVertices}, GeometryFingerprint: hex.EncodeToString(routeHash[:])}
+	if transitions != nil {
+		copy := *transitions
+		s.TransitionPolicy = &copy
+	}
 	b, err = json.Marshal(struct {
-		Route         routes.Route     `json:"route"`
-		Policy        GeographicPolicy `json:"policy"`
-		EngineVersion string           `json:"engine_version"`
-		Limits        GeometryLimits   `json:"geometry_limits"`
-	}{detached, policy, s.EngineVersion, s.Limits})
+		Route            routes.Route      `json:"route"`
+		Policy           GeographicPolicy  `json:"policy"`
+		EngineVersion    string            `json:"engine_version"`
+		Limits           GeometryLimits    `json:"geometry_limits"`
+		TransitionPolicy *TransitionPolicy `json:"transition_policy,omitempty"`
+	}{detached, policy, s.EngineVersion, s.Limits, s.TransitionPolicy})
 	if err != nil {
 		return GeographicSnapshot{}, fmt.Errorf("%w: snapshot encoding", ErrInvalidGeometry)
 	}
@@ -127,7 +144,7 @@ func (s GeographicSnapshot) Validate() error {
 	if s.EngineVersion != "short-arc-v1" {
 		return ErrInvalidGeometry
 	}
-	rebuilt, err := BuildSnapshot(s.Route, s.Policy)
+	rebuilt, err := BuildSnapshotWithTransitions(s.Route, s.Policy, s.TransitionPolicy)
 	if err != nil {
 		return err
 	}
