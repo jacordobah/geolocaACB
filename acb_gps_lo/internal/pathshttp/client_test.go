@@ -86,6 +86,9 @@ func TestGetRoutePreservesCurrentContract(t *testing.T) {
 		*route.DayShift != "JORNADA MAÑANA" {
 		t.Fatalf("metadata not preserved: %+v", route)
 	}
+	if route.GeometryVersion != nil || route.AssociationStatus != nil {
+		t.Fatal("current Python contract must not invent version or association status")
+	}
 	if len(route.Geometry.Coordinates) != 2 || route.Geometry.Coordinates[0].Longitude != -74.1 ||
 		route.Geometry.Coordinates[0].Latitude != 4.6 {
 		t.Fatalf("GeoJSON coordinate order changed: %+v", route.Geometry)

@@ -3,20 +3,25 @@ package httpapi_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/jacordobah/geolocaACB/ACB_GPS_Lo/internal/geo"
 	"github.com/jacordobah/geolocaACB/ACB_GPS_Lo/internal/httpapi"
 	"github.com/jacordobah/geolocaACB/ACB_GPS_Lo/internal/redisstore"
+	"github.com/jacordobah/geolocaACB/ACB_GPS_Lo/internal/routes"
 	"github.com/jacordobah/geolocaACB/ACB_GPS_Lo/internal/server"
 	"github.com/jacordobah/geolocaACB/ACB_GPS_Lo/internal/tracking"
 	"github.com/redis/go-redis/v9"
@@ -268,5 +273,75 @@ func TestRedisRestartProbe(t *testing.T) {
 	token := base64.RawURLEncoding.EncodeToString(seed[24:])
 	if _, err := app.tracker.Authenticate(ctx, id, token); err != nil {
 		t.Fatalf("credential after restart: %v", err)
+	}
+}
+
+func TestRedisHTTPGeographicSnapshotLifecycle(t *testing.T) {
+	app := setup(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	first, second, resolved, verified, version := "synthetic-PE01", "synthetic-PE02", "resolved", "verified", "synthetic-v1"
+	route := routes.Route{
+		ID: "synthetic-route", Name: "Synthetic school route", GeometryVersion: &version, AssociationStatus: &verified,
+		Geometry:      geo.LineString{Coordinates: []geo.Coordinate{{Longitude: -74.1, Latitude: 4.6}, {Longitude: -74.1005, Latitude: 4.6}, {Longitude: -74.101, Latitude: 4.6}}},
+		MeetingPoints: []routes.MeetingPoint{{ID: first, Name: "PE01", Kind: "meeting_point", Location: geo.Coordinate{Longitude: -74.1, Latitude: 4.6}}, {ID: second, Name: "PE02", Kind: "meeting_point", Location: geo.Coordinate{Longitude: -74.101, Latitude: 4.6}}},
+		Endpoints:     routes.Endpoints{Status: &resolved, FirstPointID: &first, Start: routes.Endpoint{PointID: &first}, End: routes.Endpoint{PointID: &second}},
+	}
+	snapshot, err := tracking.BuildSnapshot(route, tracking.GeographicPolicy{CorridorRadiusMeters: 30, PointRadiusMeters: 20, MaxAccuracyMeters: 25}) // synthetic test policy
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := fmt.Sprintf("test-i6-http-%d", now.UnixNano())
+	session := tracking.Session{ID: id, GuideID: "synthetic-guide", TripID: "synthetic-trip", RouteID: route.ID, State: tracking.Active, StartedAt: now, MaxObservationAge: 15 * time.Minute, FutureSkew: 30 * time.Second, SnapshotHash: snapshot.SnapshotHash}
+	secret := bytes.Repeat([]byte{73}, 32)
+	digest := sha256.Sum256(secret)
+	token := base64.RawURLEncoding.EncodeToString(secret)
+	encodedID := base64.RawURLEncoding.EncodeToString([]byte(id))
+	t.Cleanup(func() {
+		_ = app.client.Del(ctx, "gps:session:"+encodedID, "gps:snapshot:"+encodedID, "gps:history:"+encodedID, "gps:position:"+encodedID+":1").Err()
+		_ = app.client.ZRem(ctx, "gps:active:sessions", encodedID).Err()
+	})
+	if err := app.store.ProvisionSnapshot(ctx, session, digest, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	url := app.http.URL + "/api/v1/tracking-sessions/" + id + "/observations"
+	status, accepted := post(t, url, token, body(1, 4.6, now))
+	geoResult, ok := accepted["geographic_evaluation"].(map[string]any)
+	if status != 201 || !ok || geoResult["route_status"] != "inside" {
+		t.Fatalf("HTTP evaluation %d %+v", status, accepted)
+	}
+	points, ok := geoResult["meeting_points"].([]any)
+	if !ok || len(points) != 2 || points[0].(map[string]any)["status"] != "inside" || points[1].(map[string]any)["status"] != "outside" {
+		t.Fatalf("point evaluation %+v", geoResult)
+	}
+	stored, err := app.store.ReadPosition(ctx, id, 1)
+	if err != nil || stored.Geographic == nil || stored.Geographic.SnapshotHash != snapshot.SnapshotHash || stored.FirstArrival != nil {
+		t.Fatalf("stored evaluation %+v %v", stored, err)
+	}
+	status, replay := post(t, url, token, body(1, 4.6, now))
+	if status != 200 || replay["acceptance"] != "replayed" || !reflect.DeepEqual(replay["geographic_evaluation"], accepted["geographic_evaluation"]) || replay["expires_at"] != accepted["expires_at"] {
+		t.Fatalf("replay %d %+v", status, replay)
+	}
+	status, _ = post(t, url, token, body(1, 4.61, now))
+	if status != 409 {
+		t.Fatalf("sequence conflict HTTP %d", status)
+	}
+	page, err := app.store.History(ctx, id, 0, 10)
+	if err != nil || len(page.Positions) != 1 {
+		t.Fatalf("history %+v %v", page, err)
+	}
+	expiry, err := app.store.PositionExpiry(ctx, id, 1)
+	if err != nil || expiry.Before(now.Add(24*time.Hour)) {
+		t.Fatalf("position expiry %s %v", expiry, err)
+	}
+	if err := app.tracker.Finish(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.store.Snapshot(ctx, id); err != nil {
+		t.Fatalf("snapshot expired on finish: %v", err)
+	}
+	status, _ = post(t, url, token, body(2, 4.6, now))
+	if status != 401 {
+		t.Fatalf("closed session accepted HTTP %d", status)
 	}
 }

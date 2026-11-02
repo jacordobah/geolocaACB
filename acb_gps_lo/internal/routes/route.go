@@ -23,14 +23,16 @@ type Reader interface {
 }
 
 type Route struct {
-	ID            string
-	Name          string
-	RouteCode     *string
-	Code          *string
-	DayShift      *string
-	Geometry      geo.LineString
-	MeetingPoints []MeetingPoint // order is exactly the order returned by Python
-	Endpoints     Endpoints
+	ID                string
+	Name              string
+	RouteCode         *string
+	Code              *string
+	DayShift          *string
+	GeometryVersion   *string
+	AssociationStatus *string
+	Geometry          geo.LineString
+	MeetingPoints     []MeetingPoint // order is exactly the order returned by Python
+	Endpoints         Endpoints
 	// Unavailable names metadata that the current Python response cannot prove.
 	// This is not a route eligibility decision.
 	Unavailable []string

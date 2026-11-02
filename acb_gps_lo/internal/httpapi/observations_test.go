@@ -106,3 +106,14 @@ func TestObservationHTTPDomainErrors(t *testing.T) {
 		t.Fatalf("duplicate %d %s", w.Code, w.Body.String())
 	}
 }
+
+func TestObservationHTTPGeographicResultsAreSeparate(t *testing.T) {
+	distance := 12.0
+	receiver := receiverFunc(func(context.Context, string, string, tracking.ObservationInput) (tracking.Acceptance, error) {
+		return tracking.Acceptance{Position: tracking.Position{Sequence: 1, ReceivedAt: time.Date(2026, 10, 31, 12, 0, 1, 0, time.UTC), Geographic: &tracking.GeographicResult{SnapshotHash: strings.Repeat("a", 64), RouteStatus: "inside", RouteDistanceMeters: &distance, MeetingPoints: []tracking.PointEvaluation{{ID: "PE01", Status: "outside", DistanceMeters: 80}}}}, ExpiresAt: time.Date(2026, 11, 1, 12, 5, 0, 0, time.UTC)}, nil
+	})
+	w := request(t, receiver, validBody, "Bearer abc", "application/json")
+	if w.Code != http.StatusCreated || !strings.Contains(w.Body.String(), `"route_status":"inside"`) || !strings.Contains(w.Body.String(), `"status":"outside"`) || strings.Contains(w.Body.String(), `"geographic_evaluation":"not_evaluated"`) {
+		t.Fatalf("geographic response %d %s", w.Code, w.Body.String())
+	}
+}

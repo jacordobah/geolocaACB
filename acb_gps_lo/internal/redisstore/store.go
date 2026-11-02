@@ -2,6 +2,7 @@ package redisstore
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -32,7 +33,8 @@ func sessionKey(id string) string { return "gps:session:" + keyID(id) }
 func positionKey(id string, seq int64) string {
 	return "gps:position:" + keyID(id) + ":" + strconv.FormatInt(seq, 10)
 }
-func historyKey(id string) string { return "gps:history:" + keyID(id) }
+func historyKey(id string) string  { return "gps:history:" + keyID(id) }
+func snapshotKey(id string) string { return "gps:snapshot:" + keyID(id) }
 
 const activeKey = "gps:active:sessions"
 
@@ -50,10 +52,13 @@ func (s *Store) CreateSession(ctx context.Context, session tracking.Session) err
 	if err := session.ValidateNew(); err != nil {
 		return err
 	}
-	result, err := createScript.Run(ctx, s.client, []string{sessionKey(session.ID), activeKey}, session.ID, session.GuideID, session.RouteID, session.TripID, ms(session.StartedAt), keyID(session.ID), "", "0", "0").Text()
+	if session.SnapshotHash != "" {
+		return tracking.ErrInvalid
+	}
+	result, err := createScript.Run(ctx, s.client, []string{sessionKey(session.ID), activeKey, snapshotKey(session.ID)}, session.ID, session.GuideID, session.RouteID, session.TripID, ms(session.StartedAt), keyID(session.ID), "", "0", "0", "", "").Text()
 	if err != nil {
 		if ctx.Err() == nil {
-			confirmed, checkErr := s.confirmCreate(ctx, session, "")
+			confirmed, checkErr := s.confirmCreate(ctx, session, "", "", "")
 			if checkErr == nil && confirmed {
 				return nil
 			}
@@ -73,6 +78,22 @@ func (s *Store) CreateSession(ctx context.Context, session tracking.Session) err
 // Provision stores only a SHA-256 credential digest in the session hash.
 // The caller owns token generation and must return it only on confirmed creation.
 func (s *Store) Provision(ctx context.Context, session tracking.Session, digest [32]byte) error {
+	return s.provision(ctx, session, digest, nil)
+}
+
+// ProvisionSnapshot atomically binds a validated geographic snapshot to the
+// session. It is an internal operation; no administrative HTTP route calls it.
+func (s *Store) ProvisionSnapshot(ctx context.Context, session tracking.Session, digest [32]byte, snapshot tracking.GeographicSnapshot) error {
+	if err := snapshot.OperationalReady(); err != nil {
+		return err
+	}
+	if session.RouteID != snapshot.Route.ID || session.SnapshotHash != snapshot.SnapshotHash {
+		return tracking.ErrInvalid
+	}
+	return s.provision(ctx, session, digest, &snapshot)
+}
+
+func (s *Store) provision(ctx context.Context, session tracking.Session, digest [32]byte, snapshot *tracking.GeographicSnapshot) error {
 	if err := session.ValidateNew(); err != nil {
 		return err
 	}
@@ -80,10 +101,21 @@ func (s *Store) Provision(ctx context.Context, session tracking.Session, digest 
 		return tracking.ErrInvalid
 	}
 	digestHex := hex.EncodeToString(digest[:])
-	result, err := createScript.Run(ctx, s.client, []string{sessionKey(session.ID), activeKey}, session.ID, session.GuideID, session.RouteID, session.TripID, ms(session.StartedAt), keyID(session.ID), digestHex, session.MaxObservationAge.Milliseconds(), session.FutureSkew.Milliseconds()).Text()
+	snapshotHash, snapshotPayload := "", ""
+	if snapshot != nil {
+		snapshotHash = snapshot.SnapshotHash
+		body, err := json.Marshal(snapshot)
+		if err != nil {
+			return tracking.ErrInvalid
+		}
+		snapshotPayload = snapshotHash + "|" + string(body)
+	} else if session.SnapshotHash != "" {
+		return tracking.ErrInvalid
+	}
+	result, err := createScript.Run(ctx, s.client, []string{sessionKey(session.ID), activeKey, snapshotKey(session.ID)}, session.ID, session.GuideID, session.RouteID, session.TripID, ms(session.StartedAt), keyID(session.ID), digestHex, session.MaxObservationAge.Milliseconds(), session.FutureSkew.Milliseconds(), snapshotHash, snapshotPayload).Text()
 	if err != nil {
 		if ctx.Err() == nil {
-			confirmed, checkErr := s.confirmCreate(ctx, session, digestHex)
+			confirmed, checkErr := s.confirmCreate(ctx, session, digestHex, snapshotHash, snapshotPayload)
 			if checkErr == nil && confirmed {
 				return nil
 			}
@@ -104,10 +136,11 @@ func (s *Store) Provision(ctx context.Context, session tracking.Session, digest 
 
 // confirmCreate is used only after a transport/Redis error. It never infers
 // success from one key: the full session and active index must agree.
-func (s *Store) confirmCreate(ctx context.Context, session tracking.Session, digestHex string) (bool, error) {
+func (s *Store) confirmCreate(ctx context.Context, session tracking.Session, digestHex, snapshotHash, snapshotPayload string) (bool, error) {
 	pipe := s.client.Pipeline()
 	fields := pipe.HGetAll(ctx, sessionKey(session.ID))
 	score := pipe.ZScore(ctx, activeKey, keyID(session.ID))
+	snapshotValue := pipe.Get(ctx, snapshotKey(session.ID))
 	_, err := pipe.Exec(ctx)
 	if err != nil && !errors.Is(err, redis.Nil) {
 		return false, err
@@ -116,10 +149,13 @@ func (s *Store) confirmCreate(ctx context.Context, session tracking.Session, dig
 		return false, nil
 	}
 	f := fields.Val()
-	if f["id"] != session.ID || f["guide_id"] != session.GuideID || f["route_id"] != session.RouteID || f["trip_id"] != session.TripID || f["started_ms"] != ms(session.StartedAt) || f["credential_hash"] != digestHex || f["state"] != "active" || f["provision_complete"] != "1" {
+	if f["id"] != session.ID || f["guide_id"] != session.GuideID || f["route_id"] != session.RouteID || f["trip_id"] != session.TripID || f["started_ms"] != ms(session.StartedAt) || f["credential_hash"] != digestHex || f["state"] != "active" || f["provision_complete"] != "1" || f["snapshot_hash"] != snapshotHash {
 		return false, nil
 	}
 	if digestHex != "" && (f["max_age_ms"] != strconv.FormatInt(session.MaxObservationAge.Milliseconds(), 10) || f["future_skew_ms"] != strconv.FormatInt(session.FutureSkew.Milliseconds(), 10)) {
+		return false, nil
+	}
+	if snapshotHash != "" && (snapshotValue.Err() != nil || snapshotValue.Val() != snapshotPayload) {
 		return false, nil
 	}
 	return score.Val() == float64(session.StartedAt.UTC().UnixMilli()), nil
@@ -162,6 +198,15 @@ func (s *Store) Credential(ctx context.Context, id string) (tracking.Session, [3
 	if indexScore != float64(session.StartedAt.UTC().UnixMilli()) {
 		return tracking.Session{}, digest, tracking.ErrUnavailable
 	}
+	if session.SnapshotHash != "" {
+		prefix, err := s.client.GetRange(ctx, snapshotKey(id), 0, 64).Result()
+		if err != nil {
+			return tracking.Session{}, digest, storeErr(err)
+		}
+		if prefix != session.SnapshotHash+"|" {
+			return tracking.Session{}, digest, tracking.ErrUnavailable
+		}
+	}
 	if session.MaxObservationAge <= 0 || session.MaxObservationAge > 24*time.Hour || session.FutureSkew < 0 || session.FutureSkew > 5*time.Minute {
 		return tracking.Session{}, digest, tracking.ErrUnavailable
 	}
@@ -191,12 +236,38 @@ func (s *Store) Session(ctx context.Context, id string) (tracking.Session, error
 	return result, err
 }
 
+func (s *Store) Snapshot(ctx context.Context, id string) (tracking.GeographicSnapshot, error) {
+	session, err := s.Session(ctx, id)
+	if err != nil {
+		return tracking.GeographicSnapshot{}, err
+	}
+	if session.SnapshotHash == "" {
+		return tracking.GeographicSnapshot{}, tracking.ErrNotFound
+	}
+	raw, err := s.client.Get(ctx, snapshotKey(id)).Result()
+	if err != nil {
+		return tracking.GeographicSnapshot{}, storeErr(err)
+	}
+	if len(raw) < 65 || raw[:64] != session.SnapshotHash || raw[64] != '|' {
+		return tracking.GeographicSnapshot{}, tracking.ErrUnavailable
+	}
+	var snapshot tracking.GeographicSnapshot
+	if err := json.Unmarshal([]byte(raw[65:]), &snapshot); err != nil {
+		return tracking.GeographicSnapshot{}, storeErr(err)
+	}
+	if err := snapshot.Validate(); err != nil || snapshot.SnapshotHash != session.SnapshotHash || snapshot.Route.ID != session.RouteID {
+		return tracking.GeographicSnapshot{}, tracking.ErrUnavailable
+	}
+	return snapshot, nil
+}
+
 func validID(id string) bool { return tracking.ValidID(id) }
 
 func decodeSession(fields map[string]string) (tracking.Session, error) {
 	var result tracking.Session
 	result.ID, result.GuideID, result.RouteID, result.TripID = fields["id"], fields["guide_id"], fields["route_id"], fields["trip_id"]
 	result.State = tracking.State(fields["state"])
+	result.SnapshotHash = fields["snapshot_hash"]
 	var err error
 	result.StartedAt, err = fromMS(fields["started_ms"])
 	if err != nil {
@@ -263,8 +334,17 @@ func (s *Store) Accept(ctx context.Context, position tracking.Position) (Accepta
 		}
 		arrival = string(b)
 	}
-	keys := []string{sessionKey(position.SessionID), positionKey(position.SessionID, position.Sequence), historyKey(position.SessionID), activeKey}
-	result, err := acceptScript.Run(ctx, s.client, keys, position.Sequence, ms(position.CapturedAt), ms(position.ReceivedAt), s.retention.Milliseconds(), s.margin.Milliseconds(), fingerprint, fingerprint+"|"+string(body), arrival, keyID(position.SessionID)).Text()
+	keys := []string{sessionKey(position.SessionID), positionKey(position.SessionID, position.Sequence), historyKey(position.SessionID), activeKey, snapshotKey(position.SessionID)}
+	snapshotHash := ""
+	payload := fingerprint + "|" + string(body)
+	if position.Geographic != nil {
+		snapshotHash = position.Geographic.SnapshotHash
+	}
+	if position.IdempotencyVersion == 2 {
+		checksum := sha256.Sum256(body)
+		payload = fingerprint + "|" + hex.EncodeToString(checksum[:]) + "|" + string(body)
+	}
+	result, err := acceptScript.Run(ctx, s.client, keys, position.Sequence, ms(position.CapturedAt), ms(position.ReceivedAt), s.retention.Milliseconds(), s.margin.Milliseconds(), fingerprint, payload, arrival, keyID(position.SessionID), snapshotHash).Text()
 	if err != nil {
 		// A broken connection may hide a committed write. Never report success
 		// unless all three durable Redis structures agree and no repair is pending.
@@ -362,7 +442,7 @@ func (s *Store) FinishSession(ctx context.Context, id string, at time.Time) erro
 	if !validID(id) || at.IsZero() || at.Nanosecond()%int(time.Millisecond) != 0 {
 		return tracking.ErrInvalid
 	}
-	result, err := finishScript.Run(ctx, s.client, []string{sessionKey(id), activeKey, historyKey(id)}, ms(at), keyID(id)).Text()
+	result, err := finishScript.Run(ctx, s.client, []string{sessionKey(id), activeKey, historyKey(id), snapshotKey(id)}, ms(at), keyID(id)).Text()
 	if err != nil {
 		return fmt.Errorf("%w: finish session: %v", tracking.ErrUncertain, err)
 	}
@@ -382,9 +462,24 @@ func decodePosition(raw string) (tracking.Position, error) {
 	if len(raw) < 66 || raw[64] != '|' {
 		return tracking.Position{}, fmt.Errorf("%w: position encoding", tracking.ErrUnavailable)
 	}
+	body := raw[65:]
+	hasResultChecksum := body[0] != '{'
+	if hasResultChecksum {
+		if len(body) < 66 || body[64] != '|' {
+			return tracking.Position{}, fmt.Errorf("%w: geographic result encoding", tracking.ErrUnavailable)
+		}
+		checksum := sha256.Sum256([]byte(body[65:]))
+		if body[:64] != hex.EncodeToString(checksum[:]) {
+			return tracking.Position{}, fmt.Errorf("%w: geographic result checksum", tracking.ErrUnavailable)
+		}
+		body = body[65:]
+	}
 	var p tracking.Position
-	if err := json.Unmarshal([]byte(raw[65:]), &p); err != nil {
+	if err := json.Unmarshal([]byte(body), &p); err != nil {
 		return p, storeErr(err)
+	}
+	if p.IdempotencyVersion == 2 && !hasResultChecksum {
+		return p, fmt.Errorf("%w: missing geographic result checksum", tracking.ErrUnavailable)
 	}
 	fingerprint, _, err := p.Fingerprint()
 	if err != nil {
@@ -529,6 +624,15 @@ func (s *Store) ActiveSessions(ctx context.Context, after int64, limit int64) ([
 		started, err := strconv.ParseInt(fmt.Sprint(fields[2]), 10, 64)
 		if err != nil || float64(started) != entry.Score {
 			continue
+		}
+		session, err := s.Session(ctx, string(b))
+		if err != nil || session.SnapshotHash != "" {
+			if err != nil {
+				continue
+			}
+			if _, err := s.Snapshot(ctx, string(b)); err != nil {
+				continue
+			}
 		}
 		result = append(result, string(b))
 	}

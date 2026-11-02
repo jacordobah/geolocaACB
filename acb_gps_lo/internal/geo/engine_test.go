@@ -225,6 +225,85 @@ func TestPreparedRouteConcurrentReaders(t *testing.T) {
 	}
 }
 
+func TestSupportedSegmentNearFiveKilometres(t *testing.T) {
+	// An equatorial arc gives an independent reference: longitude degrees
+	// convert directly to R * radians, and a meridian offset is likewise
+	// R * radians. This exercises projection onto the middle of a segment
+	// much longer than the short segments in the original tests.
+	line := LineString{Coordinates: []Coordinate{{0, 0}, {0.04, 0}, {0.08, 0}}}
+	route, err := PrepareRoute(line)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantOffset := EarthRadiusMeters * 0.0002 * math.Pi / 180
+	for _, tc := range []struct {
+		name  string
+		point Coordinate
+		want  float64
+		index int
+	}{
+		{"first segment middle", Coordinate{0.02, 0.0002}, wantOffset, 0},
+		{"second segment middle", Coordinate{0.06, 0.0002}, wantOffset, 1},
+		{"before start", Coordinate{-0.001, 0}, EarthRadiusMeters * 0.001 * math.Pi / 180, 0},
+		{"after end", Coordinate{0.081, 0}, EarthRadiusMeters * 0.001 * math.Pi / 180, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := route.DistanceMeters(tc.point)
+			if err != nil || got.SegmentIndex != tc.index {
+				t.Fatalf("distance %+v: %v", got, err)
+			}
+			near(t, got.Meters, tc.want, 0.001)
+		})
+	}
+	policy := GeofencePolicy{RadiusMeters: 30, MaxAccuracyMeters: 10}
+	for _, tc := range []struct {
+		point Coordinate
+		want  Status
+	}{
+		{Coordinate{0.02, 0.0001}, Inside},
+		{Coordinate{0.02, 0.0004}, Outside},
+		{Coordinate{0.02, 0.00025}, Indeterminate},
+	} {
+		got, err := route.EvaluateCorridor(tc.point, metres(5), policy)
+		if err != nil || got.Status != tc.want {
+			t.Fatalf("corridor %+v: %+v %v", tc.point, got, err)
+		}
+	}
+}
+
+func TestKMZRepresentativeSegmentAndSyntheticDiscontinuity(t *testing.T) {
+	// The first segment of "542 - SUR" in ZONA 5 JM NOR.kmz is the
+	// longest segment found in that file (about 1,562 m). The KMZ is
+	// inspected separately; the unit test keeps its own fixed coordinates.
+	a := Coordinate{-74.08836320339499, 4.618194605104272}
+	b := Coordinate{-74.09718264410289, 4.607243151701184}
+	route, err := PrepareRoute(LineString{Coordinates: []Coordinate{a, b}})
+	if err != nil {
+		t.Fatalf("available KMZ segment should be supported: %v", err)
+	}
+	length, err := HaversineMeters(a, b)
+	if err != nil || math.Abs(length-1561.5418904622823) > 0.001 {
+		t.Fatalf("reference endpoint distance: %.6f, %v", length, err)
+	}
+	for _, endpoint := range []Coordinate{a, b} {
+		got, err := route.DistanceMeters(endpoint)
+		if err != nil || got.Meters > 0.001 {
+			t.Fatalf("endpoint distance %+v: %+v %v", endpoint, got, err)
+		}
+	}
+	// These coordinates occur only in Python's synthetic KMZ test fixture.
+	// A 15.7 km straight jump is not evidence that the real route follows
+	// a great-circle arc between its endpoints.
+	for _, line := range []LineString{
+		{Coordinates: []Coordinate{{0, 0}, {0.05, 0}}}, // 5.56 km
+		{Coordinates: []Coordinate{{-74.1, 4.6}, {-74.2, 4.7}}}, // 15.7 km
+	} {
+		if _, err := PrepareRoute(line); err == nil {
+			t.Fatalf("unverified discontinuity accepted: %+v", line)
+		}
+	}
+}
+
 func BenchmarkPreparedRouteDistance(b *testing.B) {
 	for _, vertices := range []int{10, 100, 1000} {
 		b.Run(fmt.Sprintf("vertices_%d", vertices), func(b *testing.B) {

@@ -105,7 +105,11 @@ func (h *Observations) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusOK
 		acceptance = "replayed"
 	}
-	writeJSON(w, status, map[string]any{"tracking_id": id, "sequence": result.Position.Sequence, "acceptance": acceptance, "received_at": result.Position.ReceivedAt, "expires_at": result.ExpiresAt, "geographic_evaluation": "not_evaluated"})
+	geographic := any("not_evaluated")
+	if result.Position.Geographic != nil {
+		geographic = result.Position.Geographic
+	}
+	writeJSON(w, status, map[string]any{"tracking_id": id, "sequence": result.Position.Sequence, "acceptance": acceptance, "received_at": result.Position.ReceivedAt, "expires_at": result.ExpiresAt, "geographic_evaluation": geographic})
 }
 
 func decodeError(w http.ResponseWriter, err error) {

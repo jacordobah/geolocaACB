@@ -146,6 +146,8 @@ type routeResponse struct {
 	RouteCode           *string                 `json:"route_code"`
 	Code                *string                 `json:"code"`
 	DayShift            *string                 `json:"day_shift"`
+	GeometryVersion     *string                 `json:"geometry_version"`
+	AssociationStatus   *string                 `json:"association_status"`
 	Geometry            lineResponse            `json:"geometry"`
 	MeetingPoints       *[]meetingPointResponse `json:"meeting_points"`
 	EndpointStatus      *string                 `json:"endpoint_status"`
@@ -190,13 +192,19 @@ func decodeRoute(data []byte, requestedID string) (routes.Route, error) {
 
 	result := routes.Route{
 		ID: raw.ID, Name: raw.Name, RouteCode: raw.RouteCode, Code: raw.Code,
-		DayShift: raw.DayShift, Geometry: line,
+		DayShift: raw.DayShift, GeometryVersion: raw.GeometryVersion, AssociationStatus: raw.AssociationStatus, Geometry: line,
 		MeetingPoints: make([]routes.MeetingPoint, 0, len(*raw.MeetingPoints)),
 		Endpoints: routes.Endpoints{
 			Status: raw.EndpointStatus, Reason: raw.EndpointReason,
 			FirstPointID: raw.FirstMeetingPointID,
 		},
-		Unavailable: []string{"variant", "geometry_version", "association_status", "meeting_point_association_confidence", "endpoint_geometry"},
+		Unavailable: []string{"variant", "meeting_point_association_confidence", "endpoint_geometry"},
+	}
+	if raw.GeometryVersion == nil {
+		result.Unavailable = append(result.Unavailable, "geometry_version")
+	}
+	if raw.AssociationStatus == nil {
+		result.Unavailable = append(result.Unavailable, "association_status")
 	}
 	seen := make(map[string]bool, len(*raw.MeetingPoints))
 	for index, point := range *raw.MeetingPoints {

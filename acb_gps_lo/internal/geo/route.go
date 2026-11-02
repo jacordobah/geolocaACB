@@ -5,9 +5,11 @@ import (
 	"math"
 )
 
-// Restrict long, polar and extensive GeoJSON lines: coordinate interpolation
-// can differ materially from the short great-circle arcs used here. These are
-// algorithm support limits, not operational geofence radii.
+// Restrict long, polar and extensive GeoJSON lines: KML/GeoJSON does not
+// establish that a long jump follows the shortest great-circle arc. In the
+// available school KMZ every segment is below 1.6 km; a longer jump needs
+// route-data review before this spherical interpretation can be trusted.
+// These are algorithm support limits, not operational geofence radii.
 const MaxSupportedSegmentMeters = 5_000.0
 const MaxSupportedRouteMeters = 100_000.0
 const MaxSupportedAbsLatitude = 70.0
@@ -60,7 +62,7 @@ func PrepareRoute(line LineString) (PreparedRoute, error) {
 	return PreparedRoute{segments: segments}, nil
 }
 
-// DistanceMeters measures the nearest point on each short spherical arc.
+// DistanceMeters measures the nearest point on each supported spherical arc.
 // A projection beyond an endpoint uses that endpoint instead of an infinite line.
 func (route PreparedRoute) DistanceMeters(position Coordinate) (RouteDistance, error) {
 	if err := position.Validate(); err != nil {
