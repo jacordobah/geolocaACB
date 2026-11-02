@@ -84,3 +84,38 @@ func TestParseRejectsInvalidValues(t *testing.T) {
 		})
 	}
 }
+
+func TestOperationsDeliveryConfiguration(t *testing.T) {
+	cfg, err := Parse(lookup(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.OperationsEnabled || cfg.OperationsEventURL != "" || cfg.OperationsToken != "" {
+		t.Fatal("delivery must be off by default")
+	}
+	valid := map[string]string{"GPS_OPERATIONS_DELIVERY_ENABLED": "true", "GPS_OPERATIONS_EVENT_URL": "http://operations:8080/api/v1/gps-events", "GPS_OPERATIONS_TOKEN": "synthetic-test-token", "GPS_OPERATIONS_HTTP_TIMEOUT": "2s", "GPS_OUTBOX_LEASE": "4s"}
+	cfg, err = Parse(lookup(valid))
+	if err != nil || !cfg.OperationsEnabled {
+		t.Fatalf("enabled config: %+v %v", cfg, err)
+	}
+	for _, key := range []string{"GPS_OPERATIONS_EVENT_URL", "GPS_OPERATIONS_TOKEN"} {
+		copy := map[string]string{}
+		for k, v := range valid {
+			copy[k] = v
+		}
+		delete(copy, key)
+		if _, err := Parse(lookup(copy)); err == nil {
+			t.Fatalf("missing %s accepted", key)
+		}
+	}
+	for _, tc := range []struct{ key, value string }{{"GPS_OUTBOX_LEASE", "2s"}, {"GPS_OUTBOX_WORKERS", "0"}, {"GPS_OUTBOX_MAX_PER_HOUR", "0"}, {"GPS_OUTBOX_DELIVERED_RETENTION", "0s"}, {"GPS_OPERATIONS_EVENT_URL", "http://user:password@operations/api/v1/gps-events"}} {
+		copy := map[string]string{}
+		for k, v := range valid {
+			copy[k] = v
+		}
+		copy[tc.key] = tc.value
+		if _, err := Parse(lookup(copy)); err == nil {
+			t.Fatalf("invalid %s accepted", tc.key)
+		}
+	}
+}

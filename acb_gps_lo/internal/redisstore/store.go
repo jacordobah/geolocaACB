@@ -38,6 +38,7 @@ func snapshotKey(id string) string { return "gps:snapshot:" + keyID(id) }
 
 const activeKey = "gps:active:sessions"
 const outboxKey = "gps:outbox:due"
+const pendingKey = "gps:pending:sessions"
 
 func eventKey(id string) string { return "gps:event:" + id }
 
@@ -366,7 +367,7 @@ func (s *Store) accept(ctx context.Context, position tracking.Position, plan *tr
 			return Acceptance{}, err
 		}
 	}
-	keys = append(keys, outboxKey)
+	keys = append(keys, outboxKey, pendingKey)
 	result, err := acceptScript.Run(ctx, s.client, keys, position.Sequence, ms(position.CapturedAt), ms(position.ReceivedAt), s.retention.Milliseconds(), s.margin.Milliseconds(), fingerprint, payload, arrival, keyID(position.SessionID), snapshotHash, expected, planJSON).Text()
 	if err != nil {
 		// A broken connection may hide a committed write. Never report success

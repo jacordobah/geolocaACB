@@ -13,6 +13,8 @@ import (
 
 	"github.com/jacordobah/geolocaACB/ACB_GPS_Lo/internal/config"
 	"github.com/jacordobah/geolocaACB/ACB_GPS_Lo/internal/httpapi"
+	"github.com/jacordobah/geolocaACB/ACB_GPS_Lo/internal/operationshttp"
+	"github.com/jacordobah/geolocaACB/ACB_GPS_Lo/internal/outbox"
 	"github.com/jacordobah/geolocaACB/ACB_GPS_Lo/internal/redisstore"
 	"github.com/jacordobah/geolocaACB/ACB_GPS_Lo/internal/server"
 	"github.com/jacordobah/geolocaACB/ACB_GPS_Lo/internal/tracking"
@@ -76,8 +78,40 @@ func run(logger *slog.Logger, args []string) error {
 	defer listener.Close()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	workersCtx, stopWorkers := context.WithCancel(ctx)
+	defer stopWorkers()
+	recoveryDone := outbox.StartRecovery(workersCtx, store, logger, cfg.RecoveryPoll)
+	var deliveryDone <-chan struct{}
+	if cfg.OperationsEnabled {
+		operationsClient, err := operationshttp.New(cfg.OperationsEventURL, cfg.OperationsToken, cfg.OperationsHTTPTimeout, cfg.OperationsMaxResponse)
+		if err != nil {
+			return err
+		}
+		dispatcher, err := outbox.New(store, operationsClient, outbox.Config{Workers: cfg.OutboxWorkers, Poll: cfg.OutboxPoll, Lease: cfg.OutboxLease, RetryMin: cfg.OutboxRetryMin, RetryMax: cfg.OutboxRetryMax, MaxPerHour: cfg.OutboxMaxPerHour, DeliveredRetention: cfg.OutboxDeliveredRetention}, logger)
+		if err != nil {
+			return err
+		}
+		deliveryDone = dispatcher.Start(workersCtx)
+		logger.Info("Operations event delivery enabled", "workers", cfg.OutboxWorkers)
+	} else {
+		logger.Info("Operations event delivery disabled; events remain in Redis")
+	}
 	logger.Info("HTTP server started", "port", cfg.HTTPPort)
 	err = server.Serve(ctx, listener, server.HandlerWithTracking(redisHealth{client}, cfg.RedisPingTimeout, logger, observations), cfg.ShutdownTimeout)
+	stopWorkers()
+	deadline := time.NewTimer(cfg.ShutdownTimeout)
+	defer deadline.Stop()
+	for _, done := range []<-chan struct{}{recoveryDone, deliveryDone} {
+		if done == nil {
+			continue
+		}
+		select {
+		case <-done:
+		case <-deadline.C:
+			logger.Warn("worker shutdown deadline exceeded; claims remain recoverable")
+			return err
+		}
+	}
 	if err == nil {
 		logger.Info("HTTP server stopped")
 	}

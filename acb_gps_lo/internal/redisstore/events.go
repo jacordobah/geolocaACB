@@ -112,6 +112,9 @@ func (s *Store) RecoverPending(ctx context.Context, id string) error {
 		return storeErr(err)
 	}
 	if f[0] == nil {
+		if err := s.client.ZRem(ctx, pendingKey, keyID(id)).Err(); err != nil {
+			return storeErr(err)
+		}
 		return nil
 	}
 	if f[1] == nil || f[2] == nil {
@@ -166,8 +169,8 @@ func (s *Store) confirmTransition(ctx context.Context, position tracking.Positio
 	return true, nil
 }
 
-// PendingEvents is internal and bounded. Event envelopes have no TTL; a
-// missing envelope is pruned only when its index entry is encountered.
+// PendingEvents is internal and bounded. A missing envelope is treated as a
+// storage fault; the dispatcher moves that entry to the blocked index.
 func (s *Store) PendingEvents(ctx context.Context, offset, limit int64) ([]tracking.Event, error) {
 	if offset < 0 || limit < 1 || limit > 100 {
 		return nil, tracking.ErrInvalid
@@ -180,10 +183,7 @@ func (s *Store) PendingEvents(ctx context.Context, offset, limit int64) ([]track
 	for _, id := range ids {
 		raw, err := s.client.Get(ctx, eventKey(id)).Result()
 		if errors.Is(err, redis.Nil) {
-			if err := s.client.ZRem(ctx, outboxKey, id).Err(); err != nil {
-				return nil, storeErr(err)
-			}
-			continue
+			return nil, tracking.ErrUnavailable
 		}
 		if err != nil {
 			return nil, storeErr(err)

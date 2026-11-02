@@ -6,7 +6,7 @@ import "github.com/redis/go-redis/v9"
 // only an identical retry may reconcile the same session. Lua is atomic with
 // respect to other clients but does not roll back writes after runtime errors.
 var acceptScript = redis.NewScript(`
-local session, position, history, active, snapshot, outbox = KEYS[1], KEYS[2], KEYS[3], KEYS[4], KEYS[5], KEYS[6]
+local session, position, history, active, snapshot, outbox, pendingIndex = KEYS[1], KEYS[2], KEYS[3], KEYS[4], KEYS[5], KEYS[6], KEYS[7]
 local seq, captured, received, retention, margin = tonumber(ARGV[1]), tonumber(ARGV[2]), tonumber(ARGV[3]), tonumber(ARGV[4]), tonumber(ARGV[5])
 local fingerprint, payload, arrival = ARGV[6], ARGV[7], ARGV[8]
 if not seq or not captured or not received or not retention or not margin or seq < 1 or seq > 9007199254740991 or retention < 86400000 or margin < 0 or string.len(fingerprint) ~= 64 then return 'INVALID' end
@@ -21,6 +21,8 @@ if not last or last < 0 or (last > 0 and not lastCaptured) or (pending and not p
 local transitions = fields[11] == '1'
 if fields[11] and fields[11] ~= '0' and fields[11] ~= '1' then return 'CORRUPT' end
 if transitions and redis.call('TYPE', outbox).ok ~= 'none' and redis.call('TYPE', outbox).ok ~= 'zset' then return 'CORRUPT' end
+if transitions and redis.call('TYPE', pendingIndex).ok ~= 'none' and redis.call('TYPE', pendingIndex).ok ~= 'zset' then return 'CORRUPT' end
+if transitions and redis.call('TYPE', 'gps:pending:events').ok ~= 'none' and redis.call('TYPE', 'gps:pending:events').ok ~= 'zset' then return 'CORRUPT' end
 if transitions and pending and (not fields[9] or not fields[10]) then return 'CORRUPT' end
 if transitions and not pending and (not ARGV[11] or not ARGV[12] or ARGV[12] == '') then return 'INVALID' end
 if not transitions and ARGV[12] and ARGV[12] ~= '' then return 'INVALID' end
@@ -62,7 +64,7 @@ if transitions then
     local oldEvent = redis.call('GET', eventKey)
     if oldEvent and oldEvent ~= event.payload then return 'CORRUPT' end
     local oldDue = redis.call('ZSCORE', outbox, event.id)
-    if oldDue and tonumber(oldDue) ~= event.due then return 'CORRUPT' end
+    if oldDue and tonumber(oldDue) ~= event.due and (not pending or tonumber(oldDue) < event.due) then return 'CORRUPT' end
   end
 end
 local now = redis.call('TIME')
@@ -78,6 +80,9 @@ if existing then
 end
 if not pending then
   if transitions then
+    -- Index first: a failed later write leaves a harmless candidate, never an invisible plan.
+    redis.call('ZADD', pendingIndex, redisMs, ARGV[9])
+    for _, event in ipairs(plan.events) do redis.call('ZADD', 'gps:pending:events', redisMs, event.id) end
     redis.call('HSET', session, 'pending_sequence', ARGV[1], 'pending_fingerprint', fingerprint, 'pending_plan', ARGV[12], 'pending_payload', payload)
   else
     redis.call('HSET', session, 'pending_sequence', ARGV[1], 'pending_fingerprint', fingerprint)
@@ -98,6 +103,10 @@ if transitions then
 elseif first == false and arrival ~= '' then redis.call('HSETNX', session, 'first_arrival', arrival) end
 redis.call('HSET', session, 'last_sequence', ARGV[1], 'last_captured_ms', ARGV[2], 'max_expiry_ms', string.format('%.0f', math.max(maxExpiry or 0, expiry)))
 redis.call('HDEL', session, 'pending_sequence', 'pending_fingerprint', 'pending_plan', 'pending_payload')
+if transitions then
+  redis.call('ZREM', pendingIndex, ARGV[9])
+  for _, event in ipairs(plan.events) do redis.call('ZREM', 'gps:pending:events', event.id) end
+end
 return 'ACCEPTED'
 `)
 

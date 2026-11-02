@@ -161,11 +161,12 @@ func TestEventTransitionsAndOutbox(t *testing.T) {
 	if err := client.ZAdd(ctx, outboxKey, redis.Z{Score: float64(now.UnixMilli()), Member: phantom}).Err(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.PendingEvents(ctx, 0, 10); err != nil {
-		t.Fatal(err)
+	defer client.ZRem(ctx, outboxKey, phantom)
+	if _, err := store.PendingEvents(ctx, 0, 10); !errors.Is(err, tracking.ErrUnavailable) {
+		t.Fatalf("missing envelope must be reported, got %v", err)
 	}
-	if client.ZScore(ctx, outboxKey, phantom).Err() == nil {
-		t.Fatal("missing event index reference was not pruned")
+	if client.ZScore(ctx, outboxKey, phantom).Err() != nil {
+		t.Fatal("missing envelope index was silently discarded")
 	}
 }
 

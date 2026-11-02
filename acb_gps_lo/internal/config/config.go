@@ -11,20 +11,33 @@ import (
 )
 
 type Config struct {
-	HTTPPort               int
-	RedisAddr              string
-	RedisDialTimeout       time.Duration
-	RedisPingTimeout       time.Duration
-	ShutdownTimeout        time.Duration
-	PathsBaseURL           string
-	PathsHTTPTimeout       time.Duration
-	PathsMaxResponseBytes  int64
-	GPSRetention           time.Duration
-	GPSSafetyMargin        time.Duration
-	GPSMaxObservationAge   time.Duration
-	GPSFutureSkew          time.Duration
-	GPSMaxObservationBytes int64
-	GPSRequestTimeout      time.Duration
+	HTTPPort                 int
+	RedisAddr                string
+	RedisDialTimeout         time.Duration
+	RedisPingTimeout         time.Duration
+	ShutdownTimeout          time.Duration
+	PathsBaseURL             string
+	PathsHTTPTimeout         time.Duration
+	PathsMaxResponseBytes    int64
+	GPSRetention             time.Duration
+	GPSSafetyMargin          time.Duration
+	GPSMaxObservationAge     time.Duration
+	GPSFutureSkew            time.Duration
+	GPSMaxObservationBytes   int64
+	GPSRequestTimeout        time.Duration
+	RecoveryPoll             time.Duration
+	OperationsEnabled        bool
+	OperationsEventURL       string
+	OperationsToken          string
+	OperationsHTTPTimeout    time.Duration
+	OperationsMaxResponse    int64
+	OutboxWorkers            int
+	OutboxPoll               time.Duration
+	OutboxLease              time.Duration
+	OutboxRetryMin           time.Duration
+	OutboxRetryMax           time.Duration
+	OutboxMaxPerHour         int
+	OutboxDeliveredRetention time.Duration
 }
 
 func Load() (Config, error) {
@@ -115,7 +128,92 @@ func Parse(lookup func(string) (string, bool)) (Config, error) {
 	if err != nil || cfg.GPSRequestTimeout > 30*time.Second {
 		return Config{}, fmt.Errorf("GPS_REQUEST_TIMEOUT must be between 1ns and 30s")
 	}
+	cfg.RecoveryPoll, err = duration(lookup, "GPS_RECOVERY_POLL", "2s")
+	if err != nil || cfg.RecoveryPoll < 100*time.Millisecond {
+		return Config{}, fmt.Errorf("GPS_RECOVERY_POLL must be at least 100ms")
+	}
+	enabled, err := value(lookup, "GPS_OPERATIONS_DELIVERY_ENABLED", "false")
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.OperationsEnabled, err = strconv.ParseBool(enabled)
+	if err != nil {
+		return Config{}, fmt.Errorf("GPS_OPERATIONS_DELIVERY_ENABLED must be boolean")
+	}
+	cfg.OperationsEventURL, err = optionalEndpoint(lookup, "GPS_OPERATIONS_EVENT_URL")
+	if err != nil {
+		return Config{}, err
+	}
+	if token, ok := lookup("GPS_OPERATIONS_TOKEN"); ok {
+		cfg.OperationsToken = strings.TrimSpace(token)
+	}
+	cfg.OperationsHTTPTimeout, err = duration(lookup, "GPS_OPERATIONS_HTTP_TIMEOUT", "3s")
+	if err != nil || cfg.OperationsHTTPTimeout > 30*time.Second {
+		return Config{}, fmt.Errorf("GPS_OPERATIONS_HTTP_TIMEOUT must be at most 30s")
+	}
+	response, err := value(lookup, "GPS_OPERATIONS_MAX_RESPONSE_BYTES", "4096")
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.OperationsMaxResponse, err = strconv.ParseInt(response, 10, 64)
+	if err != nil || cfg.OperationsMaxResponse < 32 || cfg.OperationsMaxResponse > 1<<20 {
+		return Config{}, fmt.Errorf("GPS_OPERATIONS_MAX_RESPONSE_BYTES invalid")
+	}
+	workers, err := value(lookup, "GPS_OUTBOX_WORKERS", "2")
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.OutboxWorkers, err = strconv.Atoi(workers)
+	if err != nil || cfg.OutboxWorkers < 1 || cfg.OutboxWorkers > 32 {
+		return Config{}, fmt.Errorf("GPS_OUTBOX_WORKERS must be 1..32")
+	}
+	cfg.OutboxPoll, err = duration(lookup, "GPS_OUTBOX_POLL", "1s")
+	if err != nil || cfg.OutboxPoll < 100*time.Millisecond {
+		return Config{}, fmt.Errorf("GPS_OUTBOX_POLL must be at least 100ms")
+	}
+	cfg.OutboxLease, err = duration(lookup, "GPS_OUTBOX_LEASE", "10s")
+	if err != nil || cfg.OutboxLease < time.Second || cfg.OutboxLease > time.Hour {
+		return Config{}, fmt.Errorf("GPS_OUTBOX_LEASE invalid")
+	}
+	cfg.OutboxRetryMin, err = duration(lookup, "GPS_OUTBOX_RETRY_MIN", "5s")
+	if err != nil || cfg.OutboxRetryMin < time.Second {
+		return Config{}, fmt.Errorf("GPS_OUTBOX_RETRY_MIN invalid")
+	}
+	cfg.OutboxRetryMax, err = duration(lookup, "GPS_OUTBOX_RETRY_MAX", "30m")
+	if err != nil || cfg.OutboxRetryMax < cfg.OutboxRetryMin || cfg.OutboxRetryMax > 24*time.Hour {
+		return Config{}, fmt.Errorf("GPS_OUTBOX_RETRY_MAX invalid")
+	}
+	maxPerHour, err := value(lookup, "GPS_OUTBOX_MAX_PER_HOUR", "60")
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.OutboxMaxPerHour, err = strconv.Atoi(maxPerHour)
+	if err != nil || cfg.OutboxMaxPerHour < 1 || cfg.OutboxMaxPerHour > 3600 {
+		return Config{}, fmt.Errorf("GPS_OUTBOX_MAX_PER_HOUR invalid")
+	}
+	cfg.OutboxDeliveredRetention, err = duration(lookup, "GPS_OUTBOX_DELIVERED_RETENTION", "168h")
+	if err != nil || cfg.OutboxDeliveredRetention < time.Hour || cfg.OutboxDeliveredRetention > 365*24*time.Hour {
+		return Config{}, fmt.Errorf("GPS_OUTBOX_DELIVERED_RETENTION invalid")
+	}
+	if cfg.OperationsEnabled && (cfg.OperationsEventURL == "" || cfg.OperationsToken == "") {
+		return Config{}, fmt.Errorf("Operations delivery requires event URL and service token")
+	}
+	if cfg.OutboxLease <= cfg.OperationsHTTPTimeout+time.Second {
+		return Config{}, fmt.Errorf("GPS_OUTBOX_LEASE must exceed HTTP timeout by more than one second")
+	}
 	return cfg, nil
+}
+
+func optionalEndpoint(lookup func(string) (string, bool), name string) (string, error) {
+	raw, ok := lookup(name)
+	if !ok || strings.TrimSpace(raw) == "" {
+		return "", nil
+	}
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Path == "" || strings.HasSuffix(u.Path, "/") {
+		return "", fmt.Errorf("%s must be an absolute HTTP endpoint", name)
+	}
+	return u.String(), nil
 }
 
 func nonnegativeDuration(lookup func(string) (string, bool), name, fallback string) (time.Duration, error) {
