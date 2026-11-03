@@ -3,11 +3,12 @@ package config
 import (
 	"fmt"
 	"net"
-	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jacordobah/geolocaACB/ACB_GPS_Lo/internal/gatewayurl"
 )
 
 type Config struct {
@@ -16,7 +17,10 @@ type Config struct {
 	RedisDialTimeout         time.Duration
 	RedisPingTimeout         time.Duration
 	ShutdownTimeout          time.Duration
-	PathsBaseURL             string
+	GatewayBaseURL           string
+	GatewayRoutesPath        string
+	GatewayRoutesToken       string
+	GatewayEventsPath        string
 	PathsHTTPTimeout         time.Duration
 	PathsMaxResponseBytes    int64
 	GPSRetention             time.Duration
@@ -27,11 +31,11 @@ type Config struct {
 	GPSRequestTimeout        time.Duration
 	RecoveryPoll             time.Duration
 	ControlAPIEnabled        bool
+	PoliciesFile             string
 	ReadPageLimit            int64
 	ReadMaxResponseBytes     int
 	ReadRequestTimeout       time.Duration
 	OperationsEnabled        bool
-	OperationsEventURL       string
 	OperationsToken          string
 	OperationsHTTPTimeout    time.Duration
 	OperationsMaxResponse    int64
@@ -88,9 +92,34 @@ func Parse(lookup func(string) (string, bool)) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	cfg.PathsBaseURL, err = optionalURL(lookup, "GPS_PATHS_BASE_URL")
-	if err != nil {
-		return Config{}, err
+	for _, legacy := range []string{"GPS_PATHS_BASE_URL", "GPS_OPERATIONS_EVENT_URL"} {
+		if raw, present := lookup(legacy); present && strings.TrimSpace(raw) != "" {
+			return Config{}, fmt.Errorf("%s is obsolete; configure the API Gateway origin and path", legacy)
+		}
+	}
+	if raw, present := lookup("GPS_GATEWAY_BASE_URL"); present && strings.TrimSpace(raw) != "" {
+		cfg.GatewayBaseURL, err = gatewayurl.Origin(raw)
+		if err != nil {
+			return Config{}, fmt.Errorf("GPS_GATEWAY_BASE_URL must be an HTTP(S) origin without a path")
+		}
+	}
+	if raw, present := lookup("GPS_GATEWAY_ROUTES_PATH"); present && strings.TrimSpace(raw) != "" {
+		if err := gatewayurl.RoutePath(raw); err != nil || cfg.GatewayBaseURL == "" {
+			return Config{}, fmt.Errorf("GPS_GATEWAY_ROUTES_PATH requires a Gateway origin and a path ending in /{route_id}")
+		}
+		cfg.GatewayRoutesPath = raw
+	}
+	if raw, present := lookup("GPS_GATEWAY_EVENTS_PATH"); present && strings.TrimSpace(raw) != "" {
+		if err := gatewayurl.EndpointPath(raw); err != nil || strings.Contains(raw, gatewayurl.RouteIDMarker) || cfg.GatewayBaseURL == "" {
+			return Config{}, fmt.Errorf("GPS_GATEWAY_EVENTS_PATH requires a Gateway origin and an absolute endpoint path")
+		}
+		cfg.GatewayEventsPath = raw
+	}
+	if token, present := lookup("GPS_GATEWAY_ROUTES_TOKEN"); present {
+		if strings.ContainsAny(token, "\r\n") {
+			return Config{}, fmt.Errorf("GPS_GATEWAY_ROUTES_TOKEN contains invalid characters")
+		}
+		cfg.GatewayRoutesToken = token
 	}
 	cfg.PathsHTTPTimeout, err = duration(lookup, "GPS_PATHS_HTTP_TIMEOUT", "3s")
 	if err != nil {
@@ -147,6 +176,12 @@ func Parse(lookup func(string) (string, bool)) (Config, error) {
 	if cfg.ControlAPIEnabled {
 		return Config{}, fmt.Errorf("control API cannot be enabled until a verified identity provider and administrative policy contract are configured")
 	}
+	if raw, present := lookup("GPS_POLICIES_FILE"); present {
+		if raw != "" && (strings.TrimSpace(raw) != raw || strings.ContainsAny(raw, "\x00\r\n")) {
+			return Config{}, fmt.Errorf("GPS_POLICIES_FILE must be a path without surrounding whitespace or control characters")
+		}
+		cfg.PoliciesFile = raw
+	}
 	readPage, err := value(lookup, "GPS_READ_MAX_PAGE_LIMIT", "100")
 	if err != nil {
 		return Config{}, err
@@ -174,10 +209,6 @@ func Parse(lookup func(string) (string, bool)) (Config, error) {
 	cfg.OperationsEnabled, err = strconv.ParseBool(enabled)
 	if err != nil {
 		return Config{}, fmt.Errorf("GPS_OPERATIONS_DELIVERY_ENABLED must be boolean")
-	}
-	cfg.OperationsEventURL, err = optionalEndpoint(lookup, "GPS_OPERATIONS_EVENT_URL")
-	if err != nil {
-		return Config{}, err
 	}
 	if token, ok := lookup("GPS_OPERATIONS_TOKEN"); ok {
 		cfg.OperationsToken = strings.TrimSpace(token)
@@ -230,25 +261,13 @@ func Parse(lookup func(string) (string, bool)) (Config, error) {
 	if err != nil || cfg.OutboxDeliveredRetention < time.Hour || cfg.OutboxDeliveredRetention > 365*24*time.Hour {
 		return Config{}, fmt.Errorf("GPS_OUTBOX_DELIVERED_RETENTION invalid")
 	}
-	if cfg.OperationsEnabled && (cfg.OperationsEventURL == "" || cfg.OperationsToken == "") {
-		return Config{}, fmt.Errorf("Operations delivery requires event URL and service token")
+	if cfg.OperationsEnabled && (cfg.GatewayBaseURL == "" || cfg.GatewayEventsPath == "" || cfg.OperationsToken == "") {
+		return Config{}, fmt.Errorf("Operations delivery requires Gateway origin, event path and service token")
 	}
 	if cfg.OutboxLease <= cfg.OperationsHTTPTimeout+time.Second {
 		return Config{}, fmt.Errorf("GPS_OUTBOX_LEASE must exceed HTTP timeout by more than one second")
 	}
 	return cfg, nil
-}
-
-func optionalEndpoint(lookup func(string) (string, bool), name string) (string, error) {
-	raw, ok := lookup(name)
-	if !ok || strings.TrimSpace(raw) == "" {
-		return "", nil
-	}
-	u, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Path == "" || strings.HasSuffix(u.Path, "/") {
-		return "", fmt.Errorf("%s must be an absolute HTTP endpoint", name)
-	}
-	return u.String(), nil
 }
 
 func nonnegativeDuration(lookup func(string) (string, bool), name, fallback string) (time.Duration, error) {
@@ -261,21 +280,6 @@ func nonnegativeDuration(lookup func(string) (string, bool), name, fallback stri
 		return 0, fmt.Errorf("%s must be nonnegative", name)
 	}
 	return d, nil
-}
-
-func optionalURL(lookup func(string) (string, bool), name string) (string, error) {
-	raw, present := lookup(name)
-	if !present || strings.TrimSpace(raw) == "" {
-		return "", nil
-	}
-	raw = strings.TrimSpace(raw)
-	parsed, err := url.Parse(raw)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") ||
-		parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" ||
-		parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
-		return "", fmt.Errorf("%s must be an http(s) origin without path, query, fragment or credentials", name)
-	}
-	return strings.TrimRight(raw, "/"), nil
 }
 
 func value(lookup func(string) (string, bool), name, fallback string) (string, error) {

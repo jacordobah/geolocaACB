@@ -74,6 +74,7 @@ func (r CreateRequest) Validate() error {
 type Policy struct {
 	Geographic  tracking.GeographicPolicy
 	Transitions *tracking.TransitionPolicy
+	Reference   tracking.PolicyReference
 }
 type Policies interface {
 	Resolve(context.Context, string) (Policy, error)
@@ -156,7 +157,10 @@ func (s *Service) Create(ctx context.Context, p Principal, key string, request C
 		if err != nil {
 			return Created{}, err
 		}
-		snapshot, err := tracking.BuildSnapshotWithTransitions(route, policy.Geographic, policy.Transitions)
+		if policy.Transitions == nil || policy.Reference.PolicyID != request.PolicyID {
+			return Created{}, tracking.ErrInvalid
+		}
+		snapshot, err := tracking.BuildSnapshotWithPolicy(route, policy.Geographic, *policy.Transitions, policy.Reference)
 		if err != nil {
 			return Created{}, err
 		}

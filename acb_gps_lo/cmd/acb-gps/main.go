@@ -15,6 +15,7 @@ import (
 	"github.com/jacordobah/geolocaACB/ACB_GPS_Lo/internal/httpapi"
 	"github.com/jacordobah/geolocaACB/ACB_GPS_Lo/internal/operationshttp"
 	"github.com/jacordobah/geolocaACB/ACB_GPS_Lo/internal/outbox"
+	"github.com/jacordobah/geolocaACB/ACB_GPS_Lo/internal/policies"
 	"github.com/jacordobah/geolocaACB/ACB_GPS_Lo/internal/redisstore"
 	"github.com/jacordobah/geolocaACB/ACB_GPS_Lo/internal/server"
 	"github.com/jacordobah/geolocaACB/ACB_GPS_Lo/internal/tracking"
@@ -52,6 +53,13 @@ func run(logger *slog.Logger, args []string) error {
 	if len(args) != 0 {
 		return fmt.Errorf("unknown command")
 	}
+	var catalog *policies.Catalog
+	if cfg.PoliciesFile != "" {
+		catalog, err = policies.LoadFile(cfg.PoliciesFile)
+		if err != nil {
+			return fmt.Errorf("load tracking policies: %w", err)
+		}
+	}
 
 	redis.SetLogger(redisLog{logger})
 	client := redis.NewClient(&redis.Options{
@@ -62,6 +70,15 @@ func run(logger *slog.Logger, args []string) error {
 	store, err := redisstore.New(client, cfg.GPSRetention, cfg.GPSSafetyMargin)
 	if err != nil {
 		return err
+	}
+	if catalog != nil {
+		startupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		err = store.RegisterPolicyDefinitions(startupCtx, catalog.References())
+		cancel()
+		if err != nil {
+			return fmt.Errorf("register tracking policy definitions: %w", err)
+		}
+		logger.Info("tracking policy catalog validated", "definitions", len(catalog.References()))
 	}
 	tracker, err := tracking.NewService(store, cfg.GPSMaxObservationAge, cfg.GPSFutureSkew, nil, nil)
 	if err != nil {
@@ -83,7 +100,7 @@ func run(logger *slog.Logger, args []string) error {
 	recoveryDone := outbox.StartRecovery(workersCtx, store, logger, cfg.RecoveryPoll)
 	var deliveryDone <-chan struct{}
 	if cfg.OperationsEnabled {
-		operationsClient, err := operationshttp.New(cfg.OperationsEventURL, cfg.OperationsToken, cfg.OperationsHTTPTimeout, cfg.OperationsMaxResponse)
+		operationsClient, err := operationshttp.New(cfg.GatewayBaseURL, cfg.GatewayEventsPath, cfg.OperationsToken, cfg.OperationsHTTPTimeout, cfg.OperationsMaxResponse)
 		if err != nil {
 			return err
 		}

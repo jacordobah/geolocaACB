@@ -239,7 +239,7 @@ func TestCurrentPythonContractCannotProvisionGeographicSession(t *testing.T) {
 		_, _ = w.Write([]byte(response))
 	}))
 	defer upstream.Close()
-	reader, err := pathshttp.New(upstream.URL, time.Second, 1<<20)
+	reader, err := pathshttp.New(upstream.URL, "/api/v1/routes/{route_id}", "", time.Second, 1<<20)
 	if err != nil {
 		t.Fatal(err)
 	}

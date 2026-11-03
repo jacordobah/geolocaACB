@@ -1,8 +1,25 @@
 # Arquitectura, alcance y límites
 
+**Actualización del catálogo:** Go puede cargar `GPS_POLICIES_FILE` al arrancar y registrar en Redis la huella histórica de cada política. Las instantáneas nuevas fijan referencia y valores; las anteriores conservan su hash. El catálogo sintético no habilita control ni lectura. Véase [políticas YAML](politicas-yaml.md).
+
 **Comprobado en código:** `cmd/acb-gps` registra `/health/live`, `/health/ready` y `POST /api/v1/tracking-sessions/{tracking_id}/observations`. `internal/httpapi` también implementa control y lectura, pero el proceso principal no registra sus handlers; `GPS_CONTROL_API_ENABLED=true` se rechaza al cargar configuración. No existe un verificador administrativo de producción ni una fuente aprobada de políticas. `GPS_OPERATIONS_DELIVERY_ENABLED=false` deja eventos en Redis y mantiene activo el trabajador de recuperación.
 
-GPS es dueño del estado técnico, credencial de observación por sesión, posiciones temporales, instantánea geográfica inmutable, evaluaciones, transiciones y outbox. Python es dueño de rutas, LineString y puntos de encuentro. El futuro controlador administrativo debe autorizar el recorrido y entregar de forma segura la credencial al dispositivo. Operaciones procesa eventos y notificaciones; no crea ni finaliza sesiones GPS por su nombre. Gateway encamina clientes una vez acordada la seguridad. La llegada técnica no modifica reglas administrativas.
+GPS es dueño del estado técnico, credencial de observación por sesión, posiciones temporales, instantánea geográfica inmutable, evaluaciones, transiciones y outbox. Python es dueño de rutas, LineString y puntos de encuentro. El futuro controlador administrativo debe autorizar el recorrido y entregar de forma segura la credencial al dispositivo. Operaciones procesa eventos y notificaciones; no crea ni finaliza sesiones GPS por su nombre. **Toda comunicación HTTP entre componentes pasa obligatoriamente por Gateway**; Redis y las dependencias locales de GPS son privadas. La llegada técnica no modifica reglas administrativas.
+
+```mermaid
+flowchart LR
+  P[Presentación] -->|HTTP: observaciones| G[API Gateway]
+  A[Controlador administrativo por definir] -.->|HTTP: control y lectura, aún deshabilitados| G
+  G -->|HTTP: rutas GPS registradas| GPS[ACB_GPS_Lo: Go]
+  GPS -->|HTTP: consulta de ruta| G
+  G -->|HTTP: ruta geográfica acordada| PY[Python / propietario geográfico]
+  GPS -.->|HTTP: evento, despacho deshabilitado| G
+  G -.->|HTTP: receptor por acordar| OP[ACB_Operation_Lo]
+  GPS -->|protocolo Redis, privado| R[(Redis)]
+  GPS -->|lectura local opcional al arrancar| F[Catálogo YAML]
+```
+
+El Gateway enruta las peticiones entrantes sin modificar los contratos HTTP de GPS. La verificación Bearer de observaciones permanece en Go: que una solicitud provenga del Gateway no demuestra por sí sola autorización. El control y la lectura requieren un proveedor verificable de identidad, audiencia, capacidad y alcance; los handlers siguen fuera del mux operativo. Las URLs salientes se componen con un origen del Gateway y rutas absolutas independientes, sin fallback hacia Python u Operaciones. La ruta receptora de eventos y el acuse durable todavía requieren acuerdo externo.
 
 **Claves Redis principales:** `gps:session:{id-codificado}`, `gps:snapshot:{id-codificado}`, `gps:position:{id-codificado}:{secuencia}`, `gps:history:{id-codificado}`, `gps:active:sessions`, `gps:control:request:{huella}`, `gps:provision:plan:{id-codificado}`, `gps:provision:pending`, `gps:finish:pending`, `gps:pending:sessions`, `gps:pending:events`, `gps:event:{event_id}`, `gps:outbox:due`, `gps:delivery:{event_id}` y `gps:outbox:blocked`. Los índices de recuperación se consultan en lotes acotados. Las reservas de control no tienen TTL hasta acordar el horizonte de reintentos.
 

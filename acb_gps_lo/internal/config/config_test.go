@@ -15,6 +15,16 @@ func TestControlRequiresApprovedVerifier(t *testing.T) {
 	}
 }
 
+func TestPolicyFileConfigurationDoesNotEnableControl(t *testing.T) {
+	cfg, err := Parse(lookup(map[string]string{"GPS_POLICIES_FILE": "/etc/acb-gps/tracking-policies.yaml"}))
+	if err != nil || cfg.PoliciesFile != "/etc/acb-gps/tracking-policies.yaml" || cfg.ControlAPIEnabled {
+		t.Fatalf("policy file must not enable control: %+v %v", cfg, err)
+	}
+	if _, err := Parse(lookup(map[string]string{"GPS_POLICIES_FILE": " relative.yaml "})); err == nil {
+		t.Fatal("ambiguous file path accepted")
+	}
+}
+
 func lookup(values map[string]string) func(string) (string, bool) {
 	return func(key string) (string, bool) {
 		value, ok := values[key]
@@ -37,7 +47,7 @@ func TestParseDefaultsAndOverrides(t *testing.T) {
 		defaults.RedisDialTimeout != 2*time.Second ||
 		defaults.RedisPingTimeout != time.Second ||
 		defaults.ShutdownTimeout != 20*time.Second ||
-		defaults.PathsBaseURL != "" || defaults.PathsHTTPTimeout != 3*time.Second ||
+		defaults.GatewayBaseURL != "" || defaults.GatewayRoutesPath != "" || defaults.GatewayEventsPath != "" || defaults.PathsHTTPTimeout != 3*time.Second ||
 		defaults.PathsMaxResponseBytes != 2<<20 || defaults.GPSRetention != 24*time.Hour || defaults.GPSSafetyMargin != 5*time.Minute || defaults.GPSMaxObservationAge != 15*time.Minute || defaults.GPSFutureSkew != 30*time.Second || defaults.GPSMaxObservationBytes != 4096 || defaults.GPSRequestTimeout != 5*time.Second {
 		t.Fatalf("unexpected defaults: %+v", defaults)
 	}
@@ -45,9 +55,10 @@ func TestParseDefaultsAndOverrides(t *testing.T) {
 	cfg, err := Parse(lookup(map[string]string{
 		"GPS_HTTP_PORT": "9090", "GPS_REDIS_ADDR": "[::1]:6380",
 		"GPS_REDIS_DIAL_TIMEOUT": "500ms", "GPS_REDIS_PING_TIMEOUT": "250ms",
-		"GPS_SHUTDOWN_TIMEOUT":   "3s",
-		"GPS_PATHS_BASE_URL":     "http://geoloca-api:8000/",
-		"GPS_PATHS_HTTP_TIMEOUT": "700ms", "GPS_PATHS_MAX_RESPONSE_BYTES": "4096",
+		"GPS_SHUTDOWN_TIMEOUT":    "3s",
+		"GPS_GATEWAY_BASE_URL":    "http://gateway.test:8000/",
+		"GPS_GATEWAY_ROUTES_PATH": "/routes/api/v1/routes/{route_id}",
+		"GPS_PATHS_HTTP_TIMEOUT":  "700ms", "GPS_PATHS_MAX_RESPONSE_BYTES": "4096",
 		"GPS_POSITION_RETENTION": "48h", "GPS_POSITION_SAFETY_MARGIN": "0s",
 	}))
 	if err != nil {
@@ -57,7 +68,7 @@ func TestParseDefaultsAndOverrides(t *testing.T) {
 		cfg.RedisDialTimeout != 500*time.Millisecond ||
 		cfg.RedisPingTimeout != 250*time.Millisecond ||
 		cfg.ShutdownTimeout != 3*time.Second ||
-		cfg.PathsBaseURL != "http://geoloca-api:8000" ||
+		cfg.GatewayBaseURL != "http://gateway.test:8000" || cfg.GatewayRoutesPath != "/routes/api/v1/routes/{route_id}" ||
 		cfg.PathsHTTPTimeout != 700*time.Millisecond || cfg.PathsMaxResponseBytes != 4096 || cfg.GPSRetention != 48*time.Hour || cfg.GPSSafetyMargin != 0 {
 		t.Fatalf("unexpected overrides: %+v", cfg)
 	}
@@ -77,9 +88,11 @@ func TestParseRejectsInvalidValues(t *testing.T) {
 		{"zero dial timeout", "GPS_REDIS_DIAL_TIMEOUT", "0s"},
 		{"negative ping timeout", "GPS_REDIS_PING_TIMEOUT", "-1s"},
 		{"invalid shutdown timeout", "GPS_SHUTDOWN_TIMEOUT", "twenty"},
-		{"URL with user info", "GPS_PATHS_BASE_URL", "http://user@python:8000"},
-		{"URL with path", "GPS_PATHS_BASE_URL", "http://python:8000/api/v1"},
-		{"URL without scheme", "GPS_PATHS_BASE_URL", "python:8000"},
+		{"URL with user info", "GPS_GATEWAY_BASE_URL", "http://user@gateway.test:8000"},
+		{"URL with path", "GPS_GATEWAY_BASE_URL", "http://gateway.test:8000/api/v1"},
+		{"URL without scheme", "GPS_GATEWAY_BASE_URL", "gateway.test:8000"},
+		{"legacy Python URL", "GPS_PATHS_BASE_URL", "http://python:8000"},
+		{"legacy Operations URL", "GPS_OPERATIONS_EVENT_URL", "http://operations:8080/events"},
 		{"invalid HTTP timeout", "GPS_PATHS_HTTP_TIMEOUT", "0s"},
 		{"zero response limit", "GPS_PATHS_MAX_RESPONSE_BYTES", "0"},
 		{"huge response limit", "GPS_PATHS_MAX_RESPONSE_BYTES", "67108865"},
@@ -109,15 +122,15 @@ func TestOperationsDeliveryConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.OperationsEnabled || cfg.OperationsEventURL != "" || cfg.OperationsToken != "" {
+	if cfg.OperationsEnabled || cfg.GatewayEventsPath != "" || cfg.OperationsToken != "" {
 		t.Fatal("delivery must be off by default")
 	}
-	valid := map[string]string{"GPS_OPERATIONS_DELIVERY_ENABLED": "true", "GPS_OPERATIONS_EVENT_URL": "http://operations:8080/api/v1/gps-events", "GPS_OPERATIONS_TOKEN": "synthetic-test-token", "GPS_OPERATIONS_HTTP_TIMEOUT": "2s", "GPS_OUTBOX_LEASE": "4s"}
+	valid := map[string]string{"GPS_OPERATIONS_DELIVERY_ENABLED": "true", "GPS_GATEWAY_BASE_URL": "http://gateway.test:8080", "GPS_GATEWAY_EVENTS_PATH": "/api/v1/gps-events", "GPS_OPERATIONS_TOKEN": "synthetic-test-token", "GPS_OPERATIONS_HTTP_TIMEOUT": "2s", "GPS_OUTBOX_LEASE": "4s"}
 	cfg, err = Parse(lookup(valid))
 	if err != nil || !cfg.OperationsEnabled {
 		t.Fatalf("enabled config: %+v %v", cfg, err)
 	}
-	for _, key := range []string{"GPS_OPERATIONS_EVENT_URL", "GPS_OPERATIONS_TOKEN"} {
+	for _, key := range []string{"GPS_GATEWAY_BASE_URL", "GPS_GATEWAY_EVENTS_PATH", "GPS_OPERATIONS_TOKEN"} {
 		copy := map[string]string{}
 		for k, v := range valid {
 			copy[k] = v
@@ -127,7 +140,7 @@ func TestOperationsDeliveryConfiguration(t *testing.T) {
 			t.Fatalf("missing %s accepted", key)
 		}
 	}
-	for _, tc := range []struct{ key, value string }{{"GPS_OUTBOX_LEASE", "2s"}, {"GPS_OUTBOX_WORKERS", "0"}, {"GPS_OUTBOX_MAX_PER_HOUR", "0"}, {"GPS_OUTBOX_DELIVERED_RETENTION", "0s"}, {"GPS_OPERATIONS_EVENT_URL", "http://user:password@operations/api/v1/gps-events"}} {
+	for _, tc := range []struct{ key, value string }{{"GPS_OUTBOX_LEASE", "2s"}, {"GPS_OUTBOX_WORKERS", "0"}, {"GPS_OUTBOX_MAX_PER_HOUR", "0"}, {"GPS_OUTBOX_DELIVERED_RETENTION", "0s"}, {"GPS_GATEWAY_EVENTS_PATH", "//operations/events"}} {
 		copy := map[string]string{}
 		for k, v := range valid {
 			copy[k] = v

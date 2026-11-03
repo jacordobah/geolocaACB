@@ -246,12 +246,14 @@ Comandos documentados: `go test ./...`, `go vet ./...`, `go mod verify`, `go tes
 
 ```mermaid
 flowchart TB
-  UI[Presentación] -->|POST observación/Bearer| GPS[ACB_GPS_Lo]
-  ADM[Controlador administrativo futuro] -. servicio/Bearer .-> GPS
-  GPS -->|GET ruta| PATHS[Python Paths]
+  UI[Presentación] -->|POST observación/Bearer| GW[API Gateway]
+  ADM[Controlador administrativo futuro] -. servicio/Bearer .-> GW
+  GW -->|HTTP rutas GPS| GPS[ACB_GPS_Lo]
+  GPS -->|GET ruta| GW
+  GW -->|HTTP ruta geográfica| PATHS[Python Paths]
   GPS -->|Redis protocol + Lua| R[(Redis + AOF)]
-  GPS -->|POST gps.event.v1| OPS[ACB_Operation_Lo]
-  GW[Gateway] -. futura ruta protegida .-> GPS
+  GPS -.->|POST gps.event.v1| GW
+  GW -.->|HTTP receptor pendiente| OPS[ACB_Operation_Lo]
   GPS -->|HTTP health| INFRA[Infraestructura]
 ```
 
@@ -269,8 +271,9 @@ flowchart LR
     end
     HP[127.0.0.1:8081] --> G
   end
-  G -. HTTP configurable .-> PY[Python externo]
-  G -. HTTP configurable .-> OP[Operaciones externa]
+  G -. HTTP configurable .-> GW[Gateway externo]
+  GW -.-> PY[Python externo]
+  GW -.-> OP[Operaciones externa]
 ```
 
 ### Módulos

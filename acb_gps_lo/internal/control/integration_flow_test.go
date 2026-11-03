@@ -27,8 +27,14 @@ import (
 
 type flowPolicies struct{}
 
-func (flowPolicies) Resolve(context.Context, string) (control.Policy, error) {
-	return control.Policy{Geographic: tracking.GeographicPolicy{CorridorRadiusMeters: 30, PointRadiusMeters: 20, MaxAccuracyMeters: 25}, Transitions: &tracking.TransitionPolicy{ArrivalObservations: 1, DeviationObservations: 2, RecoveryObservations: 2, MaxSampleGap: 5 * time.Second}}, nil
+func (flowPolicies) Resolve(_ context.Context, id string) (control.Policy, error) {
+	geographic := tracking.GeographicPolicy{CorridorRadiusMeters: 30, PointRadiusMeters: 20, MaxAccuracyMeters: 25}
+	transition := tracking.TransitionPolicy{ArrivalObservations: 1, DeviationObservations: 2, RecoveryObservations: 2, MaxSampleGap: 5 * time.Second}
+	ref, err := tracking.NewPolicyReference(id, 1, geographic, transition)
+	if err != nil {
+		return control.Policy{}, err
+	}
+	return control.Policy{Geographic: geographic, Transitions: &transition, Reference: ref}, nil
 }
 
 type flowVerifier struct{}
@@ -152,7 +158,7 @@ func TestIsolatedContractFlow(t *testing.T) {
 		}
 	}))
 	defer receiver.Close()
-	deliveryClient, err := operationshttp.New(receiver.URL+"/events", "isolated-test-service-token", time.Second, 4096)
+	deliveryClient, err := operationshttp.New(receiver.URL, "/events", "isolated-test-service-token", time.Second, 4096)
 	if err != nil {
 		t.Fatal(err)
 	}

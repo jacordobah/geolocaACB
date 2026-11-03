@@ -7,29 +7,28 @@ import (
 	"io"
 	"math"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
+	"github.com/jacordobah/geolocaACB/ACB_GPS_Lo/internal/gatewayurl"
 	"github.com/jacordobah/geolocaACB/ACB_GPS_Lo/internal/geo"
 	"github.com/jacordobah/geolocaACB/ACB_GPS_Lo/internal/routes"
 )
 
 type Client struct {
-	baseURL  string
-	http     *http.Client
-	maxBytes int64
+	gateway   string
+	routePath string
+	token     string
+	http      *http.Client
+	maxBytes  int64
 }
 
 var _ routes.Reader = (*Client)(nil)
 
-// New expects the origin of the Python service, not an /api/v1 path.
-func New(baseURL string, timeout time.Duration, maxBytes int64) (*Client, error) {
-	parsed, err := url.Parse(baseURL)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") ||
-		parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" ||
-		parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
-		return nil, fmt.Errorf("invalid geographic service base URL")
+// New accepts the Gateway origin and its complete route-detail path template.
+func New(gateway, routePath, token string, timeout time.Duration, maxBytes int64) (*Client, error) {
+	if _, err := gatewayurl.Origin(gateway); err != nil || gatewayurl.RoutePath(routePath) != nil || strings.ContainsAny(token, "\r\n") {
+		return nil, fmt.Errorf("invalid geographic Gateway configuration")
 	}
 	if timeout <= 0 || maxBytes < 1 || maxBytes > 64<<20 {
 		return nil, fmt.Errorf("invalid geographic HTTP limits")
@@ -38,7 +37,7 @@ func New(baseURL string, timeout time.Duration, maxBytes int64) (*Client, error)
 		Timeout:       timeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
-	return &Client{strings.TrimRight(baseURL, "/"), httpClient, maxBytes}, nil
+	return &Client{gateway: gateway, routePath: routePath, token: token, http: httpClient, maxBytes: maxBytes}, nil
 }
 
 // StatusError retains the upstream status and its documented error code.
@@ -74,12 +73,18 @@ func (c *Client) Get(ctx context.Context, routeID string) (routes.Route, error) 
 	if routeID == "" || strings.TrimSpace(routeID) != routeID || strings.ContainsAny(routeID, "/?#") {
 		return routes.Route{}, routes.ErrInvalidIdentifier
 	}
-	requestURL := c.baseURL + "/api/v1/routes/" + url.PathEscape(routeID)
+	requestURL, err := gatewayurl.Route(c.gateway, c.routePath, routeID)
+	if err != nil {
+		return routes.Route{}, routes.ErrInvalidIdentifier
+	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
 		return routes.Route{}, fmt.Errorf("prepare geographic request: %w", err)
 	}
 	request.Header.Set("Accept", "application/json")
+	if c.token != "" {
+		request.Header.Set("Authorization", "Bearer "+c.token)
+	}
 	response, err := c.http.Do(request)
 	if err != nil {
 		if ctx.Err() != nil {

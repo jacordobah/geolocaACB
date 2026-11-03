@@ -209,7 +209,7 @@ func TestLostReceiverResponseAndIdempotentRetry(t *testing.T) {
 		_, _ = fmt.Fprintf(w, `{"schema_version":"gps.ack.v1","event_id":"%s","status":"already_persisted"}`, event.ID)
 	}))
 	defer receiver.Close()
-	httpClient, err := operationshttp.New(receiver.URL+"/api/v1/gps-events", "synthetic-secret", time.Second, 4096)
+	httpClient, err := operationshttp.New(receiver.URL, "/api/v1/gps-events", "synthetic-secret", time.Second, 4096)
 	if err != nil {
 		t.Fatal(err)
 	}

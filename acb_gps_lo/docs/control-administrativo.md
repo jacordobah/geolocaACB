@@ -1,5 +1,7 @@
 # Integración del controlador administrativo de seguimiento
 
+**Estado del catálogo:** `policy_id` debe ser una identidad versionada que termine en `-vN`, con `revision: N` en el YAML. El archivo sintético incluido no autoriza su uso en recorridos reales. El cargador está implementado; falta aprobar políticas operativas y conectar un verificador de identidad que permita controlar la selección de cada ID. Los ejemplos históricos de esta guía con IDs sin versión son ilustrativos del JSON, pero no seleccionan ninguna entrada del catálogo actual. Véase [políticas YAML](politicas-yaml.md).
+
 El componente que autoriza los recorridos todavía no está identificado. `ACB_Operation_Lo` recibe acontecimientos; no se le atribuye creación o cierre. Los handlers de control están implementados, pero el binario **no los registra** y `GPS_CONTROL_API_ENABLED=true` falla al iniciar. El siguiente contrato describe código probado con verificadores simulados, no una API disponible en despliegue operativo.
 
 1. Obtener una credencial de servicio verificada por un futuro proveedor; audiencia `acb-gps-control`, identidad, vencimiento, capacidad `tracking:create` y alcance `trip_id`. El Bearer de observación no sirve para control. Acordar TLS y distribución de secretos fuera del repositorio.

@@ -139,7 +139,7 @@ func TestSyntheticLoad(t *testing.T) {
 		_, _ = fmt.Fprintf(w, `{"schema_version":"gps.ack.v1","event_id":%q,"status":"persisted"}`, payload.Event.ID)
 	}))
 	defer receiver.Close()
-	operations, err := operationshttp.New(receiver.URL+"/events", "synthetic-service-token", time.Second, 4096)
+	operations, err := operationshttp.New(receiver.URL, "/events", "synthetic-service-token", time.Second, 4096)
 	if err != nil {
 		t.Fatal(err)
 	}

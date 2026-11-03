@@ -34,15 +34,70 @@ func (p GeographicPolicy) Validate() error {
 }
 
 type GeographicSnapshot struct {
-	Route            routes.Route      `json:"route"`
-	Policy           GeographicPolicy  `json:"policy"`
-	TransitionPolicy *TransitionPolicy `json:"transition_policy,omitempty"`
-	EngineVersion    string            `json:"engine_version"`
-	Limits           GeometryLimits    `json:"geometry_limits"`
+	Route                 routes.Route      `json:"route"`
+	Policy                GeographicPolicy  `json:"policy"`
+	TransitionPolicy      *TransitionPolicy `json:"transition_policy,omitempty"`
+	SnapshotFormatVersion int               `json:"snapshot_format_version,omitempty"`
+	PolicyReference       *PolicyReference  `json:"policy_reference,omitempty"`
+	EngineVersion         string            `json:"engine_version"`
+	Limits                GeometryLimits    `json:"geometry_limits"`
 	// GeometryFingerprint is a locally calculated content hash, not a version
 	// issued by Python. SnapshotHash also binds the fixed policy.
 	GeometryFingerprint string `json:"geometry_fingerprint"`
 	SnapshotHash        string `json:"snapshot_hash"`
+}
+
+// PolicyReference identifies a YAML definition. Its hash is distinct from
+// SnapshotHash (route + effective policy) and GeometryFingerprint (route only).
+type PolicyReference struct {
+	PolicyID       string `json:"policy_id"`
+	Revision       int    `json:"revision"`
+	DefinitionHash string `json:"definition_hash"`
+}
+
+func NewPolicyReference(id string, revision int, geoPolicy GeographicPolicy, transitions TransitionPolicy) (PolicyReference, error) {
+	if !ValidID(id) || revision < 1 || geoPolicy.Validate() != nil || transitions.Validate() != nil {
+		return PolicyReference{}, ErrInvalid
+	}
+	b, err := json.Marshal(struct {
+		Domain      string           `json:"domain"`
+		ID          string           `json:"policy_id"`
+		Revision    int              `json:"revision"`
+		Geographic  GeographicPolicy `json:"geographic"`
+		Transitions TransitionPolicy `json:"transitions"`
+	}{"gps-policy-definition-v1", id, revision, geoPolicy, transitions})
+	if err != nil {
+		return PolicyReference{}, err
+	}
+	sum := sha256.Sum256(b)
+	return PolicyReference{PolicyID: id, Revision: revision, DefinitionHash: hex.EncodeToString(sum[:])}, nil
+}
+
+// BuildSnapshotWithPolicy preserves the legacy hash algorithm for old records.
+// Version two additionally binds a canonical, versioned policy identity.
+func BuildSnapshotWithPolicy(route routes.Route, policy GeographicPolicy, transitions TransitionPolicy, ref PolicyReference) (GeographicSnapshot, error) {
+	want, err := NewPolicyReference(ref.PolicyID, ref.Revision, policy, transitions)
+	if err != nil || want != ref {
+		return GeographicSnapshot{}, ErrInvalid
+	}
+	s, err := BuildSnapshotWithTransitions(route, policy, &transitions)
+	if err != nil {
+		return GeographicSnapshot{}, err
+	}
+	s.SnapshotFormatVersion = 2
+	s.PolicyReference = &want
+	b, err := json.Marshal(struct {
+		Domain     string          `json:"domain"`
+		LegacyHash string          `json:"legacy_hash"`
+		Format     int             `json:"snapshot_format_version"`
+		Reference  PolicyReference `json:"policy_reference"`
+	}{"gps-snapshot-v2", s.SnapshotHash, s.SnapshotFormatVersion, want})
+	if err != nil {
+		return GeographicSnapshot{}, err
+	}
+	sum := sha256.Sum256(b)
+	s.SnapshotHash = hex.EncodeToString(sum[:])
+	return s, nil
 }
 
 type GeometryLimits struct {
@@ -144,7 +199,16 @@ func (s GeographicSnapshot) Validate() error {
 	if s.EngineVersion != "short-arc-v1" {
 		return ErrInvalidGeometry
 	}
-	rebuilt, err := BuildSnapshotWithTransitions(s.Route, s.Policy, s.TransitionPolicy)
+	var rebuilt GeographicSnapshot
+	var err error
+	switch {
+	case s.SnapshotFormatVersion == 0 && s.PolicyReference == nil:
+		rebuilt, err = BuildSnapshotWithTransitions(s.Route, s.Policy, s.TransitionPolicy)
+	case s.SnapshotFormatVersion == 2 && s.PolicyReference != nil && s.TransitionPolicy != nil:
+		rebuilt, err = BuildSnapshotWithPolicy(s.Route, s.Policy, *s.TransitionPolicy, *s.PolicyReference)
+	default:
+		return ErrInvalidGeometry
+	}
 	if err != nil {
 		return err
 	}

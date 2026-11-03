@@ -2,7 +2,7 @@
 
 El despacho HTTP está implementado y probado con `httptest`, pero **deshabilitado por defecto**. La ruta receptora, autenticación y semántica del acuse deben acordarse con `ACB_Operation_Lo` antes de habilitarlo. GPS detecta y entrega acontecimientos; Operaciones decide reglas y notificaciones administrativas.
 
-Solicitud propuesta: `POST <GPS_OPERATIONS_EVENT_URL>`, `Authorization: Bearer <secreto-servicio>`, `Idempotency-Key: <event_id>`, `Content-Type: application/json`, cuerpo `{"schema_version":"gps.event.v1","event":{...}}`. Se entrega **al menos una vez**: reintentos y pérdidas de respuesta pueden repetir el mismo `event_id`. El receptor debe persistir de manera atómica su deduplicación por `event_id` junto con el efecto y responder HTTP 200/201 JSON `{"schema_version":"gps.ack.v1","event_id":"...","status":"persisted"}` o `"already_persisted"`. Un 2xx sin acuse exacto no confirma entrega. No hay garantía extremo a extremo de efecto único hasta verificar el receptor real.
+Solicitud propuesta: `POST` a `GPS_GATEWAY_BASE_URL` + `GPS_GATEWAY_EVENTS_PATH` (ruta absoluta completa acordada con Gateway), `Authorization: Bearer <secreto-servicio>`, `Idempotency-Key: <event_id>`, `Content-Type: application/json`, cuerpo `{"schema_version":"gps.event.v1","event":{...}}`. GPS sólo envía HTTP al Gateway; éste debe encaminar hacia Operaciones sin alterar el sobre. Se entrega **al menos una vez**: reintentos y pérdidas de respuesta pueden repetir el mismo `event_id`. El receptor debe persistir de manera atómica su deduplicación por `event_id` junto con el efecto y responder HTTP 200/201 JSON `{"schema_version":"gps.ack.v1","event_id":"...","status":"persisted"}` o `"already_persisted"`. Un 2xx del Gateway sin ese acuse exacto **no** confirma entrega. No hay garantía extremo a extremo de efecto único hasta verificar el receptor real.
 
 Campos comunes obligatorios: `event_id` (SHA-256 estable), `event_type`, `tracking_id`, `trip_id`, `guide_id`, `geo_route_id`, `occurred_at`. Los eventos geográficos también llevan `sequence`, `captured_at`, `observed_from`, `evidence_count`, `geometry_fingerprint`, `snapshot_hash`, `longitude`, `latitude`, `accuracy_meters`, `route_distance_meters`; los de llegada llevan además `meeting_point_id`, `meeting_point_order`, `meeting_point_distance_meters`; los desvíos llevan `episode_start_sequence`. `geometry_version` es opcional cuando la ruta la provee oficialmente. Los eventos de ciclo técnico **no** llevan secuencia, captura, coordenadas ni evidencia GPS inventada; `snapshot_hash` es opcional cuando la sesión no tenía instantánea.
 
@@ -18,17 +18,17 @@ Ejemplos mínimos (IDs abreviados sólo para lectura; en producción `event_id` 
 
 Outbox Redis: `pending` → `in_flight` (reclamación con token y lease) → `delivered`, `pending` reprogramado o `blocked`. Un trabajador viejo no puede confirmar una reclamación vencida. Timeouts, conexión, 429 y 5xx reintentan con espera creciente y variación; errores de contrato o autorización bloquean sin borrar el sobre. Eventos pendientes y bloqueados no tienen TTL de historial GPS. Tras acuse, el sobre y la evidencia de entrega conservan un TTL técnico configurable (`GPS_OUTBOX_DELIVERED_RETENTION`, 168 h por defecto), pendiente de acuerdo. Al finalizar sesión o expirar posiciones, los eventos sin acuse siguen disponibles.
 
-Operaciones debe acordar: URL interna o Gateway, TLS, credencial/rotación, esquema definitivo, qué estados administrativos produce cada evento, deduplicación durable, acuse exacto, retención posterior y tratamiento de errores permanentes. El envío real no debe activarse hasta completar estas verificaciones.
+Gateway y Operaciones deben acordar: ruta del Gateway, transporte/TLS, credencial y rotación, preservación del sobre e `Idempotency-Key`, propagación del acuse durable, esquema definitivo, deduplicación, retención posterior y tratamiento de errores permanentes. La conexión HTTP directa GPS → Operaciones no está permitida. El envío real no debe activarse hasta completar estas verificaciones.
 
 ## Intercambio HTTP íntegro y ejemplos por tipo
 
-**Estado:** contrato provisional implementado en el emisor y probado con receptor `httptest`; no aprobado ni implementado en Operaciones real. GPS sólo comunica acontecimientos; Operaciones debe persistir, deduplicar y gestionar sus propias decisiones/notificaciones. La URL es el valor completo de `GPS_OPERATIONS_EVENT_URL`, cuyo path se acordará. El cliente exige HTTP 200 o 201, `Content-Type: application/json` y acuse exacto sin campos extra.
+**Estado:** contrato provisional implementado en el emisor y probado con receptor `httptest`; no aprobado ni implementado en Operaciones real. GPS sólo comunica acontecimientos; Operaciones debe persistir, deduplicar y gestionar sus propias decisiones/notificaciones. La ruta del Gateway es `GPS_GATEWAY_EVENTS_PATH`, cuyo valor se acordará. El cliente exige HTTP 200 o 201, `Content-Type: application/json` y acuse exacto sin campos extra.
 
 Ejemplo de solicitud de activación técnica (los IDs son sintéticos; el `event_id` de 64 hex corresponde al cálculo estable del código para `t-demo`):
 
 ```http
 POST /ruta-provisional-de-eventos HTTP/1.1
-Host: operaciones.example.test
+Host: gateway.example.test
 Authorization: Bearer <credencial-servicio-gps>
 Idempotency-Key: 1c05dc3e9616ea862ab2579749c470b76db61f0ca600d9ea72a87795d015034c
 Accept: application/json

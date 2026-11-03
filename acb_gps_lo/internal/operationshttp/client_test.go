@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -59,7 +60,7 @@ func TestClientAcknowledgementAndIdempotentReceiver(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(acknowledgement{SchemaVersion: "gps.ack.v1", EventID: event.ID, Status: status})
 	}))
 	defer server.Close()
-	client, err := New(server.URL+"/api/v1/gps-events", "synthetic-service-token", time.Second, 4096)
+	client, err := New(server.URL, "/api/v1/gps-events", "synthetic-service-token", time.Second, 4096)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,6 +71,54 @@ func TestClientAcknowledgementAndIdempotentReceiver(t *testing.T) {
 	}
 	if received[event.ID] != 2 || effects[event.ID] != 1 {
 		t.Fatalf("received=%v effects=%v", received, effects)
+	}
+}
+
+func TestGatewayPathRequiresDurableOperationsAck(t *testing.T) {
+	event := testEvent()
+	var requests atomic.Int32
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.URL.Path != "/operations/api/v1/events" || r.Header.Get("Idempotency-Key") != event.ID || r.Header.Get("Authorization") != "Bearer synthetic-service-token" {
+			t.Errorf("Gateway request changed: %s %s", r.Method, r.URL.Path)
+		}
+		var body envelope
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.SchemaVersion != "gps.event.v1" || body.Event.ID != event.ID {
+			t.Errorf("event contract changed: %+v %v", body, err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK) // Gateway success alone is not Operations persistence.
+	}))
+	defer gateway.Close()
+	client, err := New(gateway.URL, "/operations/api/v1/events", "synthetic-service-token", time.Second, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failure, ok := client.Deliver(context.Background(), event).(*DeliveryError)
+	if !ok || !failure.Permanent || requests.Load() != 1 {
+		t.Fatalf("missing Operations ack accepted: failure=%v requests=%d", failure, requests.Load())
+	}
+}
+
+func TestGatewayFailureDoesNotRedirectToOperations(t *testing.T) {
+	event := testEvent()
+	var directRequests atomic.Int32
+	operations := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		directRequests.Add(1)
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer operations.Close()
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", operations.URL+"/events")
+		w.WriteHeader(http.StatusTemporaryRedirect)
+	}))
+	defer gateway.Close()
+	client, err := New(gateway.URL, "/operations/events", "synthetic-service-token", time.Second, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Deliver(context.Background(), event); err == nil || directRequests.Load() != 0 {
+		t.Fatalf("Gateway redirect followed: err=%v direct=%d", err, directRequests.Load())
 	}
 }
 
@@ -97,7 +146,7 @@ func TestClientFailures(t *testing.T) {
 				_, _ = w.Write([]byte(tc.body))
 			}))
 			defer server.Close()
-			client, err := New(server.URL+"/api/v1/gps-events", "test", 10*time.Millisecond, 4096)
+			client, err := New(server.URL, "/api/v1/gps-events", "test", 10*time.Millisecond, 4096)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -108,7 +157,7 @@ func TestClientFailures(t *testing.T) {
 			}
 		})
 	}
-	client, err := New("http://127.0.0.1:1/api/v1/gps-events", "test", 10*time.Millisecond, 4096)
+	client, err := New("http://127.0.0.1:1", "/api/v1/gps-events", "test", 10*time.Millisecond, 4096)
 	if err != nil {
 		t.Fatal(err)
 	}

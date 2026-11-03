@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -63,11 +64,56 @@ func testClient(t *testing.T, handler http.HandlerFunc, timeout time.Duration, m
 	t.Helper()
 	upstream := httptest.NewServer(handler)
 	t.Cleanup(upstream.Close)
-	client, err := New(upstream.URL, timeout, maxBytes)
+	client, err := New(upstream.URL, "/api/v1/routes/{route_id}", "", timeout, maxBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return client
+}
+
+func TestGatewayPrefixAndServiceCredential(t *testing.T) {
+	var requests atomic.Int32
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.URL.Path != "/paths/api/v1/routes/"+routeID || r.Header.Get("Authorization") != "Bearer test-gateway-token" || r.Header.Get("Accept") != "application/json" {
+			t.Errorf("Gateway request changed: path=%q headers=%v", r.URL.Path, r.Header)
+		}
+		_, _ = io.WriteString(w, routeJSON)
+	}))
+	defer gateway.Close()
+	client, err := New(gateway.URL, "/paths/api/v1/routes/{route_id}", "test-gateway-token", time.Second, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Get(context.Background(), routeID); err != nil || requests.Load() != 1 {
+		t.Fatalf("Gateway route query: requests=%d err=%v", requests.Load(), err)
+	}
+	for _, path := range []string{"/api/v1/api/v1/routes/{route_id}?x=1", "/paths/api/v1/routes", "/paths/api/v1/routes/{route_id}/extra"} {
+		if _, err := New(gateway.URL, path, "", time.Second, 1<<20); err == nil {
+			t.Fatalf("accepted ambiguous route path %q", path)
+		}
+	}
+}
+
+func TestGatewayFailureDoesNotRedirectToPython(t *testing.T) {
+	var directRequests atomic.Int32
+	python := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		directRequests.Add(1)
+		_, _ = io.WriteString(w, routeJSON)
+	}))
+	defer python.Close()
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", python.URL+"/api/v1/routes/"+routeID)
+		w.WriteHeader(http.StatusTemporaryRedirect)
+	}))
+	defer gateway.Close()
+	client, err := New(gateway.URL, "/paths/api/v1/routes/{route_id}", "", time.Second, 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Get(context.Background(), routeID); err == nil || directRequests.Load() != 0 {
+		t.Fatalf("Gateway redirect followed: err=%v direct=%d", err, directRequests.Load())
+	}
 }
 
 func TestGetRoutePreservesCurrentContract(t *testing.T) {
@@ -206,7 +252,7 @@ func TestNetworkErrorTimeoutAndCancellation(t *testing.T) {
 		upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 		address := upstream.URL
 		upstream.Close()
-		client, err := New(address, time.Second, 1<<20)
+		client, err := New(address, "/api/v1/routes/{route_id}", "", time.Second, 1<<20)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -330,7 +376,7 @@ func TestHealthDoesNotDependOnPython(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	address := upstream.URL
 	upstream.Close()
-	client, err := New(address, time.Second, 1<<20)
+	client, err := New(address, "/api/v1/routes/{route_id}", "", time.Second, 1<<20)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -348,18 +394,18 @@ func TestHealthDoesNotDependOnPython(t *testing.T) {
 	}
 }
 
-// Opt-in read-only check against an already running Python service. The normal
-// test suite remains independent of Python, MongoDB and Docker.
-func TestPythonIntegrationOptIn(t *testing.T) {
-	baseURL := os.Getenv("GPS_PATHS_BASE_URL")
+// Opt-in read-only check through an already running API Gateway.
+func TestGatewayIntegrationOptIn(t *testing.T) {
+	baseURL := os.Getenv("GPS_GATEWAY_BASE_URL")
+	path := os.Getenv("GPS_GATEWAY_ROUTES_PATH")
 	id := os.Getenv("GPS_PATHS_TEST_ROUTE_ID")
-	if baseURL == "" && id == "" {
-		t.Skip("set GPS_PATHS_BASE_URL and GPS_PATHS_TEST_ROUTE_ID for a read-only integration check")
+	if baseURL == "" && path == "" && id == "" {
+		t.Skip("set GPS_GATEWAY_BASE_URL, GPS_GATEWAY_ROUTES_PATH and GPS_PATHS_TEST_ROUTE_ID for a read-only integration check")
 	}
-	if baseURL == "" || id == "" {
-		t.Fatal("both GPS_PATHS_BASE_URL and GPS_PATHS_TEST_ROUTE_ID are required")
+	if baseURL == "" || path == "" || id == "" {
+		t.Fatal("Gateway origin, route path and route ID are required")
 	}
-	client, err := New(baseURL, 3*time.Second, 2<<20)
+	client, err := New(baseURL, path, os.Getenv("GPS_GATEWAY_ROUTES_TOKEN"), 3*time.Second, 2<<20)
 	if err != nil {
 		t.Fatal(err)
 	}

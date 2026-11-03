@@ -1,6 +1,6 @@
 # Contrato geográfico Python → GPS
 
-Go consulta `GET /api/v1/routes/{route_id}` a `GPS_PATHS_BASE_URL` mediante HTTP al aprovisionar; no accede a MongoDB ni consulta Python por cada GPS. El identificador de ruta debe coincidir con `_id` devuelto. La URL base es origen HTTP(S), sin `/api/v1`. Timeouts y tamaño están limitados por `GPS_PATHS_HTTP_TIMEOUT` y `GPS_PATHS_MAX_RESPONSE_BYTES`.
+Go consulta la ruta geográfica al aprovisionar **a través del API Gateway**; no accede a MongoDB ni consulta Python por cada GPS. Configure `GPS_GATEWAY_BASE_URL` como origen HTTP(S) sin ruta y `GPS_GATEWAY_ROUTES_PATH` como ruta absoluta completa terminada en `/{route_id}`. El Gateway debe encaminarla a `GET /api/v1/routes/{route_id}` de Python, conservando cuerpo, errores y encabezados necesarios; el prefijo público concreto queda pendiente de acuerdo. `GPS_GATEWAY_ROUTES_TOKEN` es opcional y sólo se configura cuando se acuerde autenticación de servicio con Gateway. El identificador debe coincidir con `_id` devuelto. Timeouts y tamaño siguen limitados por `GPS_PATHS_HTTP_TIMEOUT` y `GPS_PATHS_MAX_RESPONSE_BYTES`. No hay fallback directo a Python.
 
 **Contrato observado y consumido actualmente:** `_id`, `name`, `geometry:{"type":"LineString","coordinates":[[longitude,latitude],...]}`, `meeting_points` como lista ordenada de `{_id,name,kind:"meeting_point",description?,location:{type:"Point",coordinates:[lon,lat]}}`; opcionales `route_code`, `code`, `day_shift`, `endpoint_status`, `endpoint_reason`, `start_meeting_point_id`, `end_meeting_point_id`, `first_meeting_point_id` y metadatos `endpoints.start/end`. El cliente Go ya admite los campos `geometry_version` y `association_status` si Python los entrega, pero la respuesta real revisada no los aporta. `variant`, procedencia/confianza global de asociación y geometría explícita de extremos tampoco están garantizados.
 
@@ -16,7 +16,7 @@ La responsabilidad del propietario geográfico es servir una ruta con identidad,
 
 ```http
 GET /api/v1/routes/ruta-demo HTTP/1.1
-Host: paths.example.test
+Host: gateway.example.test
 Accept: application/json
 ```
 

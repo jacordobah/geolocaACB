@@ -9,10 +9,10 @@ import (
 	"io"
 	"mime"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
+	"github.com/jacordobah/geolocaACB/ACB_GPS_Lo/internal/gatewayurl"
 	"github.com/jacordobah/geolocaACB/ACB_GPS_Lo/internal/tracking"
 )
 
@@ -32,12 +32,12 @@ type Client struct {
 	maxResponse int64
 }
 
-func New(endpoint, token string, timeout time.Duration, maxResponse int64) (*Client, error) {
-	u, err := url.Parse(endpoint)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.Fragment != "" || u.RawQuery != "" || u.Path == "" || strings.HasSuffix(u.Path, "/") || strings.TrimSpace(token) == "" || strings.ContainsAny(token, "\r\n") || timeout <= 0 || maxResponse < 32 || maxResponse > 1<<20 {
+func New(gateway, eventPath, token string, timeout time.Duration, maxResponse int64) (*Client, error) {
+	endpoint, err := gatewayurl.Endpoint(gateway, eventPath)
+	if err != nil || strings.TrimSpace(token) == "" || strings.ContainsAny(token, "\r\n") || timeout <= 0 || maxResponse < 32 || maxResponse > 1<<20 {
 		return nil, errors.New("invalid Operations HTTP configuration")
 	}
-	return &Client{endpoint: u.String(), token: token, http: &http.Client{Timeout: timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, maxResponse: maxResponse}, nil
+	return &Client{endpoint: endpoint, token: token, http: &http.Client{Timeout: timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, maxResponse: maxResponse}, nil
 }
 
 type envelope struct {

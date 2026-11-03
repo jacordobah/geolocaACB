@@ -6,12 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/jacordobah/geolocaACB/ACB_GPS_Lo/internal/control"
 	"github.com/jacordobah/geolocaACB/ACB_GPS_Lo/internal/geo"
+	policycatalog "github.com/jacordobah/geolocaACB/ACB_GPS_Lo/internal/policies"
 	"github.com/jacordobah/geolocaACB/ACB_GPS_Lo/internal/redisstore"
 	"github.com/jacordobah/geolocaACB/ACB_GPS_Lo/internal/routes"
 	"github.com/jacordobah/geolocaACB/ACB_GPS_Lo/internal/tracking"
@@ -27,8 +29,14 @@ func (r reader) Get(context.Context, string) (routes.Route, error) { return r.ro
 
 type policies struct{}
 
-func (policies) Resolve(context.Context, string) (control.Policy, error) {
-	return control.Policy{Geographic: tracking.GeographicPolicy{CorridorRadiusMeters: 30, PointRadiusMeters: 20, MaxAccuracyMeters: 25}}, nil
+func (policies) Resolve(_ context.Context, id string) (control.Policy, error) {
+	geographic := tracking.GeographicPolicy{CorridorRadiusMeters: 30, PointRadiusMeters: 20, MaxAccuracyMeters: 25}
+	transition := tracking.TransitionPolicy{ArrivalObservations: 1, DeviationObservations: 2, RecoveryObservations: 2, MaxSampleGap: 5 * time.Second}
+	ref, err := tracking.NewPolicyReference(id, 1, geographic, transition)
+	if err != nil {
+		return control.Policy{}, err
+	}
+	return control.Policy{Geographic: geographic, Transitions: &transition, Reference: ref}, nil
 }
 
 type uncertainReservation struct {
@@ -147,6 +155,55 @@ func TestUncertainReservationRecoversWithoutSecondSession(t *testing.T) {
 	replayed, err := svc.Create(context.Background(), principal(), "uncertain", request)
 	if err != nil || replayed.Session.ID != store.saved.Session.ID || replayed.Credential == "" {
 		t.Fatalf("recovery: %+v %v", replayed, err)
+	}
+}
+
+func TestPolicyCatalogChangePreservesReservedSessionOnRetry(t *testing.T) {
+	fixture := []byte("schema_version: 1\npolicies:\n  - policy_id: demo-v1\n    revision: 1\n    geographic:\n      corridor_radius_meters: 30\n      point_radius_meters: 20\n      max_accuracy_meters: 25\n    transitions:\n      arrival_observations: 2\n      arrival_dwell: 1s\n      deviation_observations: 2\n      deviation_dwell: 1s\n      recovery_observations: 2\n      recovery_dwell: 1s\n      max_sample_gap: 5s\n")
+	old, err := policycatalog.Parse(fixture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reservation := &uncertainReservation{failed: true}
+	tracker := &fakeTracker{}
+	secret := sha256.Sum256([]byte("isolated policy selection secret only"))
+	service, err := control.New(tracker, reader{route: syntheticRoute()}, old, reservation, secret[:], time.Minute, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := control.CreateRequest{TripID: "test-trip", GuideID: "test-guide", GeoRouteID: "test-route", PolicyID: "demo-v1"}
+	created, err := service.Create(context.Background(), principal(), "catalog-key", request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Session.SnapshotHash != reservation.saved.Snapshot.SnapshotHash || reservation.saved.Snapshot.PolicyReference.PolicyID != "demo-v1" {
+		t.Fatal("versioned snapshot not reserved")
+	}
+	second := strings.ReplaceAll(strings.ReplaceAll(string(fixture), "demo-v1", "demo-v2"), "revision: 1", "revision: 2")
+	second = strings.ReplaceAll(second, "point_radius_meters: 20", "point_radius_meters: 40")
+	second = strings.TrimPrefix(second, "schema_version: 1\npolicies:\n")
+	newCatalog, err := policycatalog.Parse(append(fixture, []byte(second)...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := control.New(tracker, reader{route: syntheticRoute()}, newCatalog, reservation, secret[:], time.Minute, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, err := restarted.Create(context.Background(), principal(), "catalog-key", request)
+	if err != nil || !replay.Replayed || replay.Session.ID != created.Session.ID || reservation.saved.Snapshot.Policy.PointRadiusMeters != 20 {
+		t.Fatalf("retry changed effective policy: %+v %v", replay, err)
+	}
+	newReservation := &uncertainReservation{failed: true}
+	newTracker := &fakeTracker{}
+	newService, err := control.New(newTracker, reader{route: syntheticRoute()}, newCatalog, newReservation, secret[:], time.Minute, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.PolicyID = "demo-v2"
+	newSession, err := newService.Create(context.Background(), principal(), "catalog-key-v2", request)
+	if err != nil || newSession.Session.ID == created.Session.ID || newReservation.saved.Snapshot.Policy.PointRadiusMeters != 40 || newReservation.saved.Snapshot.PolicyReference.Revision != 2 {
+		t.Fatalf("new policy version was not selected: %+v %v", newSession, err)
 	}
 }
 

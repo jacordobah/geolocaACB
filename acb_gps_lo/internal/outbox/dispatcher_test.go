@@ -172,7 +172,7 @@ func TestDispatcherConcurrentWorkersAndRestart(t *testing.T) {
 		_, _ = io.WriteString(w, `{"schema_version":"gps.ack.v1","event_id":"`+event.ID+`","status":"persisted"}`)
 	}))
 	defer receiver.Close()
-	client, err := operationshttp.New(receiver.URL+"/api/v1/gps-events", "synthetic-token", time.Second, 4096)
+	client, err := operationshttp.New(receiver.URL, "/api/v1/gps-events", "synthetic-token", time.Second, 4096)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,7 +255,7 @@ func TestDispatcherBlocksPermanentFailure(t *testing.T) {
 	ctx := context.Background()
 	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusUnauthorized) }))
 	defer receiver.Close()
-	httpClient, err := operationshttp.New(receiver.URL+"/api/v1/gps-events", "synthetic-token", time.Second, 4096)
+	httpClient, err := operationshttp.New(receiver.URL, "/api/v1/gps-events", "synthetic-token", time.Second, 4096)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,7 +316,7 @@ func TestDispatcherDrainsInFlightOnCancel(t *testing.T) {
 		_, _ = io.WriteString(w, `{"schema_version":"gps.ack.v1","event_id":"`+event.ID+`","status":"persisted"}`)
 	}))
 	defer receiver.Close()
-	client, err := operationshttp.New(receiver.URL+"/api/v1/gps-events", "synthetic-token", time.Second, 4096)
+	client, err := operationshttp.New(receiver.URL, "/api/v1/gps-events", "synthetic-token", time.Second, 4096)
 	if err != nil {
 		t.Fatal(err)
 	}
