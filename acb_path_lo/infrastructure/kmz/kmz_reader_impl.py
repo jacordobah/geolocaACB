@@ -15,6 +15,10 @@ MEETING_POINT_PATTERN = re.compile(r"^PE\s*\d+$")
 WALKING_SEGMENT_PATTERN = re.compile(r"^TC\s*\d+$")
 RISK_POINT_PATTERN = re.compile(r"^PR\s*\d+$")
 ROUTE_CODE_PATTERN = re.compile(r"^\s*(\d{3})\b")
+ROUTE_GROUP_FOLDER_PATTERN = re.compile(
+    r"^\s*([A-Z]{2}\d{2})\s*[-–—]\s*(.+?)\s*$",
+    re.IGNORECASE,
+)
 
 STUDENT_FOLDER_MARKERS = (
     "GEOREFERENCIACION",
@@ -101,6 +105,24 @@ def route_code(name: str) -> str | None:
     return match.group(1) if match else None
 
 
+def _route_display_name(name: str, folder_path: tuple[str, ...]) -> str:
+    if not name.strip().isdigit():
+        return name
+
+    group_code = route_group_code(folder_path)
+    if group_code is None:
+        return name
+
+    for folder in folder_path:
+        match = ROUTE_GROUP_FOLDER_PATTERN.match(folder)
+        if match and match.group(1).upper() == group_code:
+            school_name = match.group(2).strip()
+            if school_name:
+                return f"{name.strip()} - {school_name}"
+
+    return name
+
+
 def _is_school_route_folder(folder_path: tuple[str, ...]) -> bool:
     segments = tuple(normalize_label(segment) for segment in folder_path)
     return (
@@ -151,6 +173,7 @@ class KmzReaderImpl:
                             default="Unnamed",
                             namespaces=NS,
                         )
+                        name = _route_display_name(name, folder_path)
 
                         description = placemark.findtext(
                             "kml:description",

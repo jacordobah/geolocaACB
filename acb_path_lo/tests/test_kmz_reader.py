@@ -125,6 +125,26 @@ SINGULAR_KML = """<?xml version="1.0" encoding="UTF-8"?>
 </kml>"""
 
 
+NUMERIC_ROUTE_KML = """<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Folder>
+    <name>RUTAS AL COLEGIO EN BICI</name>
+    <Folder>
+      <name>PM03 - COLEGIO DEMO</name>
+      <Folder>
+        <name>RUTAS</name>
+        <Placemark>
+          <name>541</name>
+          <LineString>
+            <coordinates>-74.1,4.6,0 -74.2,4.7,0</coordinates>
+          </LineString>
+        </Placemark>
+      </Folder>
+    </Folder>
+  </Folder>
+</kml>"""
+
+
 EDGE_KML = """<?xml version="1.0" encoding="UTF-8"?>
 <kml xmlns="http://www.opengis.net/kml/2.2">
   <Document>
@@ -181,6 +201,14 @@ class KmzReaderTests(unittest.TestCase):
         self.assertEqual(points[0].name, "PE01")
         self.assertEqual(points[0].kind, PointKind.MEETING_POINT)
         self.assertEqual(points[0].folder_path[-1], "PUNTOS DE ENCUENTO 541")
+
+    def test_reader_adds_school_name_to_numeric_school_route(self):
+        routes, _ = KmzReaderImpl().read(make_kmz(NUMERIC_ROUTE_KML))
+
+        self.assertEqual(len(routes), 1)
+        self.assertEqual(routes[0].name, "541 - COLEGIO DEMO")
+        self.assertEqual(routes[0].code, "541")
+        self.assertEqual(routes[0].route_code, "PM03")
 
     def test_reader_ignores_short_linestrings_and_macosx_files(self):
         extra = {
