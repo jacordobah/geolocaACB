@@ -12,9 +12,11 @@ import (
 	"time"
 
 	"github.com/jacordobah/geolocaACB/ACB_GPS_Lo/internal/config"
+	"github.com/jacordobah/geolocaACB/ACB_GPS_Lo/internal/control"
 	"github.com/jacordobah/geolocaACB/ACB_GPS_Lo/internal/httpapi"
 	"github.com/jacordobah/geolocaACB/ACB_GPS_Lo/internal/operationshttp"
 	"github.com/jacordobah/geolocaACB/ACB_GPS_Lo/internal/outbox"
+	"github.com/jacordobah/geolocaACB/ACB_GPS_Lo/internal/pathshttp"
 	"github.com/jacordobah/geolocaACB/ACB_GPS_Lo/internal/policies"
 	"github.com/jacordobah/geolocaACB/ACB_GPS_Lo/internal/redisstore"
 	"github.com/jacordobah/geolocaACB/ACB_GPS_Lo/internal/server"
@@ -88,6 +90,39 @@ func run(logger *slog.Logger, args []string) error {
 	if err != nil {
 		return err
 	}
+	var controlHandler, readsHandler http.Handler
+	if cfg.ControlAPIEnabled || cfg.ReadAPIEnabled {
+		verifier, err := control.NewGatewayVerifier(cfg.GatewayInternalToken, cfg.ControlAPIEnabled, cfg.ReadAPIEnabled)
+		if err != nil {
+			return fmt.Errorf("Gateway credential verifier: %w", err)
+		}
+		if cfg.ControlAPIEnabled {
+			if catalog == nil {
+				return fmt.Errorf("control API requires a validated tracking policy catalog")
+			}
+			reader, err := pathshttp.New(cfg.GatewayBaseURL, cfg.GatewayRoutesPath, cfg.GatewayRoutesToken, cfg.PathsHTTPTimeout, cfg.PathsMaxResponseBytes)
+			if err != nil {
+				return fmt.Errorf("geographic Gateway client: %w", err)
+			}
+			service, err := control.New(tracker, reader, catalog, store, cfg.ControlCredentialKey, cfg.ControlIssuanceWindow, nil)
+			if err != nil {
+				return fmt.Errorf("control service: %w", err)
+			}
+			controlHandler, err = httpapi.NewControl(service, verifier, cfg.ControlRequestTimeout)
+			if err != nil {
+				return fmt.Errorf("control handler: %w", err)
+			}
+			if cfg.ReadAPIEnabled {
+				readsHandler, err = httpapi.NewReads(service, verifier, cfg.ReadRequestTimeout, cfg.ReadPageLimit, cfg.ReadMaxResponseBytes)
+				if err != nil {
+					return fmt.Errorf("read handler: %w", err)
+				}
+			}
+		} else if cfg.ReadAPIEnabled {
+			// Read-only composition still requires a controller with persisted scope checks.
+			return fmt.Errorf("read API requires control API in this composition")
+		}
+	}
 	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", cfg.HTTPPort))
 	if err != nil {
 		return fmt.Errorf("listen HTTP: %w", err)
@@ -114,7 +149,7 @@ func run(logger *slog.Logger, args []string) error {
 		logger.Info("Operations event delivery disabled; events remain in Redis")
 	}
 	logger.Info("HTTP server started", "port", cfg.HTTPPort)
-	err = server.Serve(ctx, listener, server.HandlerWithTracking(redisHealth{client}, cfg.RedisPingTimeout, logger, observations), cfg.ShutdownTimeout)
+	err = server.Serve(ctx, listener, server.HandlerWithReads(redisHealth{client}, cfg.RedisPingTimeout, logger, observations, controlHandler, readsHandler), cfg.ShutdownTimeout)
 	stopWorkers()
 	deadline := time.NewTimer(cfg.ShutdownTimeout)
 	defer deadline.Stop()

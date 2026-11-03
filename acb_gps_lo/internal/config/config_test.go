@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,54 @@ func TestControlRequiresApprovedVerifier(t *testing.T) {
 	}
 	if _, err := Parse(lookup(map[string]string{"GPS_CONTROL_API_ENABLED": "invalid"})); err == nil {
 		t.Fatal("invalid control flag")
+	}
+}
+
+func TestTrustedGatewayConfiguration(t *testing.T) {
+	secret := base64.RawURLEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
+	valid := map[string]string{
+		"GPS_CONTROL_API_ENABLED": "true", "GPS_READ_API_ENABLED": "true",
+		"GPS_GATEWAY_BASE_URL":       "http://gateway.test:8080",
+		"GPS_GATEWAY_ROUTES_PATH":    "/paths/api/v1/routes/{route_id}",
+		"GPS_POLICIES_FILE":          "/etc/acb-gps/tracking-policies.yaml",
+		"GPS_GATEWAY_INTERNAL_TOKEN": secret,
+		"GPS_CONTROL_CREDENTIAL_KEY": base64.RawURLEncoding.EncodeToString([]byte("abcdef0123456789abcdef0123456789")),
+	}
+	cfg, err := Parse(lookup(valid))
+	if err != nil || !cfg.ControlAPIEnabled || !cfg.ReadAPIEnabled || len(cfg.ControlCredentialKey) != 32 {
+		t.Fatalf("valid trusted Gateway configuration: %+v %v", cfg, err)
+	}
+	for _, key := range []string{"GPS_GATEWAY_BASE_URL", "GPS_GATEWAY_ROUTES_PATH", "GPS_POLICIES_FILE", "GPS_GATEWAY_INTERNAL_TOKEN", "GPS_CONTROL_CREDENTIAL_KEY"} {
+		copy := map[string]string{}
+		for k, v := range valid {
+			copy[k] = v
+		}
+		delete(copy, key)
+		if _, err := Parse(lookup(copy)); err == nil {
+			t.Fatalf("missing %s accepted", key)
+		}
+	}
+	for _, pair := range [][2]string{{"GPS_GATEWAY_INTERNAL_TOKEN", "weak"}, {"GPS_CONTROL_CREDENTIAL_KEY", "weak"}, {"GPS_CONTROL_ISSUANCE_WINDOW", "2h"}, {"GPS_CONTROL_REQUEST_TIMEOUT", "31s"}} {
+		copy := map[string]string{}
+		for k, v := range valid {
+			copy[k] = v
+		}
+		copy[pair[0]] = pair[1]
+		if _, err := Parse(lookup(copy)); err == nil {
+			t.Fatalf("invalid %s accepted", pair[0])
+		}
+	}
+	same := map[string]string{}
+	for k, v := range valid {
+		same[k] = v
+	}
+	same["GPS_CONTROL_CREDENTIAL_KEY"] = same["GPS_GATEWAY_INTERNAL_TOKEN"]
+	if _, err := Parse(lookup(same)); err == nil {
+		t.Fatal("shared Gateway and credential derivation secrets accepted")
+	}
+	readOnly := map[string]string{"GPS_READ_API_ENABLED": "true"}
+	if _, err := Parse(lookup(readOnly)); err == nil {
+		t.Fatal("read API without control accepted")
 	}
 }
 

@@ -42,6 +42,9 @@ type Principal struct {
 	Capabilities map[string]bool
 	TripIDs      map[string]bool
 	TrackingIDs  map[string]bool
+	// gatewayTrusted is set only by the internal Gateway credential verifier.
+	// The Gateway is responsible for contextual trip and policy authorization.
+	gatewayTrusted bool
 }
 
 func (p Principal) Allows(now time.Time, capability, tripID, trackingID string) bool {
@@ -49,7 +52,13 @@ func (p Principal) Allows(now time.Time, capability, tripID, trackingID string) 
 		return false
 	}
 	if trackingID != "" {
+		if p.gatewayTrusted {
+			return true
+		}
 		return p.TrackingIDs[trackingID] || (tripID != "" && p.TripIDs[tripID])
+	}
+	if p.gatewayTrusted {
+		return true
 	}
 	if tripID != "" && !p.TripIDs[tripID] {
 		return false

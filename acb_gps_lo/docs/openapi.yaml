@@ -3,19 +3,20 @@ info:
   title: ACB_GPS_Lo HTTP API
   version: 0.9.0-prototype2
   description: >-
-    Contrato de los handlers del código actual. Salud y recepción GPS están registradas en el binario.
-    Control y lectura están implementados y probados aisladamente, pero NO están
-    registrados ni habilitados en el proceso operativo hasta contar con identidad
-    de servicio verificada, política autorizada y rutas OperationalReady. La opción
-    GPS_CONTROL_API_ENABLED=true es rechazada actualmente; cambiarla no registra rutas.
+    Contrato de los handlers del código actual. Salud y recepción GPS están registradas.
+    Control se registra con GPS_CONTROL_API_ENABLED=true y configuración completa de
+    Gateway confiable, catálogo YAML y cliente geográfico. Lectura requiere además
+    GPS_READ_API_ENABLED=true. Ambos flags son false por defecto. GPS verifica la
+    credencial interna; Gateway autoriza contextual y previamente al consumidor,
+    recorrido y política. Las rutas reales aún requieren OperationalReady.
 servers:
   - url: http://127.0.0.1:8081
     description: Publicación local predeterminada de Docker Compose
 tags:
   - name: salud
   - name: observaciones
-  - name: control-deshabilitado
-  - name: lectura-deshabilitada
+  - name: control-condicional
+  - name: lectura-condicional
 paths:
   /health/live:
     get:
@@ -56,12 +57,13 @@ paths:
               example: { status: not_ready, dependencies: { redis: unavailable } }
   /api/v1/tracking-sessions:
     post:
-      tags: [control-deshabilitado]
+      tags: [control-condicional]
       summary: Aprovisionar sesión técnica
-      x-operational-status: implemented-disabled
+      x-operational-status: conditional-gateway-credential
       description: >-
-        Handler implementado, ausente del mux de producción. Necesita verificador real,
-        alcance sobre trip_id, política aprobada y ruta OperationalReady. Cuerpo <=4096 bytes;
+        Handler registrado sólo con configuración completa. Gateway autoriza el
+        contexto y policy_id; GPS verifica su credencial interna. Requiere ruta
+        OperationalReady y política aprobada. Cuerpo <=4096 bytes;
         JSON estricto; respuesta con Cache-Control no-store. Un reintento idéntico usa
         el mismo Idempotency-Key y puede recibir credencial sólo en su ventana de emisión.
       security: [{ serviceBearer: [] }]
@@ -77,7 +79,7 @@ paths:
         content:
           application/json:
             schema: { $ref: '#/components/schemas/CreateSession' }
-            example: { trip_id: trip-sintetico, guide_id: guia-sintetica, geo_route_id: ruta-sintetica, policy_id: politica-aprobada }
+            example: { trip_id: trip-sintetico, guide_id: guia-sintetica, geo_route_id: ruta-sintetica, policy_id: demo-school-v1 }
       responses:
         '201': { $ref: '#/components/responses/CreatedSession' }
         '200': { $ref: '#/components/responses/CreatedSession' }
@@ -93,9 +95,9 @@ paths:
   /api/v1/tracking-sessions/{tracking_id}:
     parameters: [{ $ref: '#/components/parameters/TrackingID' }]
     get:
-      tags: [control-deshabilitado]
+      tags: [control-condicional]
       summary: Estado técnico de la sesión
-      x-operational-status: implemented-disabled
+      x-operational-status: conditional-gateway-credential
       security: [{ serviceBearer: [] }]
       x-required-capability: tracking:read
       responses:
@@ -115,9 +117,9 @@ paths:
   /api/v1/tracking-sessions/{tracking_id}/finish:
     parameters: [{ $ref: '#/components/parameters/TrackingID' }]
     post:
-      tags: [control-deshabilitado]
+      tags: [control-condicional]
       summary: Finalizar seguimiento técnico
-      x-operational-status: implemented-disabled
+      x-operational-status: conditional-gateway-credential
       description: Sin cuerpo. Idempotente; revoca credencial y conserva historial sujeto a TTL.
       security: [{ serviceBearer: [] }]
       x-required-capability: tracking:finish
@@ -164,9 +166,9 @@ paths:
   /api/v1/tracking-sessions/{tracking_id}/latest-position:
     parameters: [{ $ref: '#/components/parameters/TrackingID' }]
     get:
-      tags: [lectura-deshabilitada]
+      tags: [lectura-condicional]
       summary: Última posición aceptada disponible
-      x-operational-status: implemented-disabled
+      x-operational-status: conditional-gateway-credential
       security: [{ serviceBearer: [] }]
       x-required-capability: tracking:read
       responses:
@@ -190,9 +192,9 @@ paths:
   /api/v1/tracking-sessions/{tracking_id}/positions:
     parameters: [{ $ref: '#/components/parameters/TrackingID' }]
     get:
-      tags: [lectura-deshabilitada]
+      tags: [lectura-condicional]
       summary: Historial temporal ordenado por secuencia
-      x-operational-status: implemented-disabled
+      x-operational-status: conditional-gateway-credential
       security: [{ serviceBearer: [] }]
       x-required-capability: tracking:read
       description: Omite posiciones expiradas; no extiende TTL al leer. Cache-Control no-store.
@@ -225,7 +227,7 @@ paths:
 components:
   securitySchemes:
     observationBearer: { type: http, scheme: bearer, description: Credencial de observación limitada a una sesión }
-    serviceBearer: { type: http, scheme: bearer, description: Credencial de servicio verificable; proveedor pendiente }
+    serviceBearer: { type: http, scheme: bearer, description: Credencial interna compartida exclusivamente con Gateway; no es Bearer GPS ni identidad de usuario final }
   parameters:
     TrackingID:
       name: tracking_id

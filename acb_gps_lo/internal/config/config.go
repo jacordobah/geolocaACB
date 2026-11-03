@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"fmt"
 	"net"
 	"os"
@@ -31,6 +32,11 @@ type Config struct {
 	GPSRequestTimeout        time.Duration
 	RecoveryPoll             time.Duration
 	ControlAPIEnabled        bool
+	ReadAPIEnabled           bool
+	GatewayInternalToken     string
+	ControlCredentialKey     []byte
+	ControlIssuanceWindow    time.Duration
+	ControlRequestTimeout    time.Duration
 	PoliciesFile             string
 	ReadPageLimit            int64
 	ReadMaxResponseBytes     int
@@ -173,14 +179,53 @@ func Parse(lookup func(string) (string, bool)) (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("GPS_CONTROL_API_ENABLED must be boolean")
 	}
-	if cfg.ControlAPIEnabled {
-		return Config{}, fmt.Errorf("control API cannot be enabled until a verified identity provider and administrative policy contract are configured")
+	readEnabled, err := value(lookup, "GPS_READ_API_ENABLED", "false")
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.ReadAPIEnabled, err = strconv.ParseBool(readEnabled)
+	if err != nil {
+		return Config{}, fmt.Errorf("GPS_READ_API_ENABLED must be boolean")
+	}
+	if cfg.ReadAPIEnabled && !cfg.ControlAPIEnabled {
+		return Config{}, fmt.Errorf("GPS_READ_API_ENABLED requires GPS_CONTROL_API_ENABLED")
 	}
 	if raw, present := lookup("GPS_POLICIES_FILE"); present {
 		if raw != "" && (strings.TrimSpace(raw) != raw || strings.ContainsAny(raw, "\x00\r\n")) {
 			return Config{}, fmt.Errorf("GPS_POLICIES_FILE must be a path without surrounding whitespace or control characters")
 		}
 		cfg.PoliciesFile = raw
+	}
+	if cfg.ControlAPIEnabled || cfg.ReadAPIEnabled {
+		if cfg.GatewayBaseURL == "" {
+			return Config{}, fmt.Errorf("Gateway origin required for protected APIs")
+		}
+		raw, e := value(lookup, "GPS_GATEWAY_INTERNAL_TOKEN", "")
+		if e != nil || !validSecret(raw) {
+			return Config{}, fmt.Errorf("GPS_GATEWAY_INTERNAL_TOKEN must be canonical base64url of 32..64 random bytes")
+		}
+		cfg.GatewayInternalToken = raw
+	}
+	if cfg.ControlAPIEnabled {
+		if cfg.PoliciesFile == "" || cfg.GatewayRoutesPath == "" {
+			return Config{}, fmt.Errorf("control API requires GPS_POLICIES_FILE and GPS_GATEWAY_ROUTES_PATH")
+		}
+		raw, e := value(lookup, "GPS_CONTROL_CREDENTIAL_KEY", "")
+		if e != nil || !validSecret(raw) {
+			return Config{}, fmt.Errorf("GPS_CONTROL_CREDENTIAL_KEY must be canonical base64url of 32..64 random bytes")
+		}
+		if raw == cfg.GatewayInternalToken {
+			return Config{}, fmt.Errorf("GPS_CONTROL_CREDENTIAL_KEY must differ from GPS_GATEWAY_INTERNAL_TOKEN")
+		}
+		cfg.ControlCredentialKey, _ = base64.RawURLEncoding.DecodeString(raw)
+		cfg.ControlIssuanceWindow, err = duration(lookup, "GPS_CONTROL_ISSUANCE_WINDOW", "10m")
+		if err != nil || cfg.ControlIssuanceWindow > time.Hour {
+			return Config{}, fmt.Errorf("GPS_CONTROL_ISSUANCE_WINDOW must be 1ns..1h")
+		}
+		cfg.ControlRequestTimeout, err = duration(lookup, "GPS_CONTROL_REQUEST_TIMEOUT", "5s")
+		if err != nil || cfg.ControlRequestTimeout > 30*time.Second {
+			return Config{}, fmt.Errorf("GPS_CONTROL_REQUEST_TIMEOUT must be 1ns..30s")
+		}
 	}
 	readPage, err := value(lookup, "GPS_READ_MAX_PAGE_LIMIT", "100")
 	if err != nil {
@@ -268,6 +313,11 @@ func Parse(lookup func(string) (string, bool)) (Config, error) {
 		return Config{}, fmt.Errorf("GPS_OUTBOX_LEASE must exceed HTTP timeout by more than one second")
 	}
 	return cfg, nil
+}
+
+func validSecret(raw string) bool {
+	decoded, err := base64.RawURLEncoding.DecodeString(raw)
+	return err == nil && len(decoded) >= 32 && len(decoded) <= 64 && base64.RawURLEncoding.EncodeToString(decoded) == raw
 }
 
 func nonnegativeDuration(lookup func(string) (string, bool), name, fallback string) (time.Duration, error) {
