@@ -1,3 +1,6 @@
+include:
+  - path: ./acb_gps_lo/compose.yaml
+
 services:
   acb_mongo_db:
     image: mongo:8.0
@@ -41,6 +44,16 @@ services:
       acb-net:
         aliases:
           - geoloca-api
+
+  acb_gps_lo:
+    environment:
+      GPS_GATEWAY_BASE_URL: ${GPS_GATEWAY_BASE_URL:-http://api-gateway:5062}
+      GPS_GATEWAY_ROUTES_PATH: ${GPS_GATEWAY_ROUTES_PATH:-/api/v1/routes/{route_id}}
+    networks:
+      gps-net: {}
+      acb-net:
+        aliases:
+          - geoloca-gps
 
 volumes:
   mongo_data:

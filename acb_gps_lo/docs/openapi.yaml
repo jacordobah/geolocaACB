@@ -10,7 +10,7 @@ info:
     credencial interna; Gateway autoriza contextual y previamente al consumidor,
     recorrido y política. Las rutas reales aún requieren OperationalReady.
 servers:
-  - url: http://127.0.0.1:8081
+  - url: http://127.0.0.1:8079
     description: Publicación local predeterminada de Docker Compose
 tags:
   - name: salud

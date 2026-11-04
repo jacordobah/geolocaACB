@@ -135,7 +135,7 @@ Lua se ejecuta dentro de Redis y serializa un script frente a otros comandos: pe
 
 ### Docker y Compose
 
-El Dockerfile compila en `golang:1.27.3-bookworm` con `CGO_ENABLED=0`, `-trimpath`, `-buildvcs=false` y binario reducido; la etapa final es Distroless nonroot. Compose crea dos contenedores, red privada `gps-net` y volumen `gps-redis-data`. Go publica sólo `127.0.0.1:8081` hacia el host; Redis no publica puerto. Un healthcheck propio consulta readiness y el de Redis ejecuta `redis-cli ping`. Python/MongoDB no comparten imagen, red ni volumen por defecto.
+El Dockerfile compila en `golang:1.27.3-bookworm` con `CGO_ENABLED=0`, `-trimpath`, `-buildvcs=false` y binario reducido; la etapa final es Distroless nonroot. Compose crea los contenedores `acb_gps_lo` y `acb_gps_redis`, red privada `gps-net` y volumen `gps-redis-data`. Go publica sólo `127.0.0.1:8079` hacia el host; Redis no publica puerto. Un healthcheck propio consulta readiness y el de Redis ejecuta `redis-cli ping`. Python/MongoDB no comparten imagen, red ni volumen por defecto.
 
 ## 6. Patrones y mecanismos
 
@@ -269,7 +269,7 @@ flowchart LR
       G --> R
       R --> V
     end
-    HP[127.0.0.1:8081] --> G
+    HP[127.0.0.1:8079] --> G
   end
   G -. HTTP configurable .-> GW[Gateway externo]
   GW -.-> PY[Python externo]

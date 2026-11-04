@@ -1,7 +1,7 @@
 # Optional integration overlay. The Gateway team supplies the external network.
 # This file never creates or modifies the Gateway service or its network.
 services:
-  gps:
+  acb_gps_lo:
     networks:
       - gps-net
       - gateway-net
