@@ -1,0 +1,202 @@
+package config
+
+import (
+	"encoding/base64"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestControlRequiresApprovedVerifier(t *testing.T) {
+	if _, err := Parse(lookup(map[string]string{"GPS_CONTROL_API_ENABLED": "true"})); err == nil {
+		t.Fatal("control API enabled without identity provider")
+	}
+	if _, err := Parse(lookup(map[string]string{"GPS_CONTROL_API_ENABLED": "invalid"})); err == nil {
+		t.Fatal("invalid control flag")
+	}
+}
+
+func TestTrustedGatewayConfiguration(t *testing.T) {
+	secret := base64.RawURLEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
+	valid := map[string]string{
+		"GPS_CONTROL_API_ENABLED": "true", "GPS_READ_API_ENABLED": "true",
+		"GPS_GATEWAY_BASE_URL":       "http://gateway.test:8080",
+		"GPS_GATEWAY_ROUTES_PATH":    "/paths/api/v1/routes/{route_id}",
+		"GPS_POLICIES_FILE":          "/etc/acb-gps/tracking-policies.yaml",
+		"GPS_GATEWAY_INTERNAL_TOKEN": secret,
+		"GPS_CONTROL_CREDENTIAL_KEY": base64.RawURLEncoding.EncodeToString([]byte("abcdef0123456789abcdef0123456789")),
+	}
+	cfg, err := Parse(lookup(valid))
+	if err != nil || !cfg.ControlAPIEnabled || !cfg.ReadAPIEnabled || len(cfg.ControlCredentialKey) != 32 {
+		t.Fatalf("valid trusted Gateway configuration: %+v %v", cfg, err)
+	}
+	for _, key := range []string{"GPS_GATEWAY_BASE_URL", "GPS_GATEWAY_ROUTES_PATH", "GPS_POLICIES_FILE", "GPS_GATEWAY_INTERNAL_TOKEN", "GPS_CONTROL_CREDENTIAL_KEY"} {
+		copy := map[string]string{}
+		for k, v := range valid {
+			copy[k] = v
+		}
+		delete(copy, key)
+		if _, err := Parse(lookup(copy)); err == nil {
+			t.Fatalf("missing %s accepted", key)
+		}
+	}
+	for _, pair := range [][2]string{{"GPS_GATEWAY_INTERNAL_TOKEN", "weak"}, {"GPS_CONTROL_CREDENTIAL_KEY", "weak"}, {"GPS_CONTROL_ISSUANCE_WINDOW", "2h"}, {"GPS_CONTROL_REQUEST_TIMEOUT", "31s"}} {
+		copy := map[string]string{}
+		for k, v := range valid {
+			copy[k] = v
+		}
+		copy[pair[0]] = pair[1]
+		if _, err := Parse(lookup(copy)); err == nil {
+			t.Fatalf("invalid %s accepted", pair[0])
+		}
+	}
+	same := map[string]string{}
+	for k, v := range valid {
+		same[k] = v
+	}
+	same["GPS_CONTROL_CREDENTIAL_KEY"] = same["GPS_GATEWAY_INTERNAL_TOKEN"]
+	if _, err := Parse(lookup(same)); err == nil {
+		t.Fatal("shared Gateway and credential derivation secrets accepted")
+	}
+	readOnly := map[string]string{"GPS_READ_API_ENABLED": "true"}
+	if _, err := Parse(lookup(readOnly)); err == nil {
+		t.Fatal("read API without control accepted")
+	}
+}
+
+func TestPolicyFileConfigurationDoesNotEnableControl(t *testing.T) {
+	cfg, err := Parse(lookup(map[string]string{"GPS_POLICIES_FILE": "/etc/acb-gps/tracking-policies.yaml"}))
+	if err != nil || cfg.PoliciesFile != "/etc/acb-gps/tracking-policies.yaml" || cfg.ControlAPIEnabled {
+		t.Fatalf("policy file must not enable control: %+v %v", cfg, err)
+	}
+	if _, err := Parse(lookup(map[string]string{"GPS_POLICIES_FILE": " relative.yaml "})); err == nil {
+		t.Fatal("ambiguous file path accepted")
+	}
+}
+
+func lookup(values map[string]string) func(string) (string, bool) {
+	return func(key string) (string, bool) {
+		value, ok := values[key]
+		return value, ok
+	}
+}
+
+func TestParseDefaultsAndOverrides(t *testing.T) {
+	defaults, err := Parse(lookup(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if defaults.ControlAPIEnabled {
+		t.Fatal("control API must be disabled by default")
+	}
+	if defaults.ReadPageLimit != 100 || defaults.ReadMaxResponseBytes != 1<<20 || defaults.ReadRequestTimeout != 5*time.Second {
+		t.Fatalf("read defaults: %+v", defaults)
+	}
+	if defaults.HTTPPort != 8080 || defaults.RedisAddr != "redis:6379" ||
+		defaults.RedisDialTimeout != 2*time.Second ||
+		defaults.RedisPingTimeout != time.Second ||
+		defaults.ShutdownTimeout != 20*time.Second ||
+		defaults.GatewayBaseURL != "" || defaults.GatewayRoutesPath != "" || defaults.GatewayEventsPath != "" || defaults.PathsHTTPTimeout != 3*time.Second ||
+		defaults.PathsMaxResponseBytes != 2<<20 || defaults.GPSRetention != 24*time.Hour || defaults.GPSSafetyMargin != 5*time.Minute || defaults.GPSMaxObservationAge != 15*time.Minute || defaults.GPSFutureSkew != 30*time.Second || defaults.GPSMaxObservationBytes != 4096 || defaults.GPSRequestTimeout != 5*time.Second {
+		t.Fatalf("unexpected defaults: %+v", defaults)
+	}
+
+	cfg, err := Parse(lookup(map[string]string{
+		"GPS_HTTP_PORT": "9090", "GPS_REDIS_ADDR": "[::1]:6380",
+		"GPS_REDIS_DIAL_TIMEOUT": "500ms", "GPS_REDIS_PING_TIMEOUT": "250ms",
+		"GPS_SHUTDOWN_TIMEOUT":    "3s",
+		"GPS_GATEWAY_BASE_URL":    "http://gateway.test:8000/",
+		"GPS_GATEWAY_ROUTES_PATH": "/routes/api/v1/routes/{route_id}",
+		"GPS_PATHS_HTTP_TIMEOUT":  "700ms", "GPS_PATHS_MAX_RESPONSE_BYTES": "4096",
+		"GPS_POSITION_RETENTION": "48h", "GPS_POSITION_SAFETY_MARGIN": "0s",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.HTTPPort != 9090 || cfg.RedisAddr != "[::1]:6380" ||
+		cfg.RedisDialTimeout != 500*time.Millisecond ||
+		cfg.RedisPingTimeout != 250*time.Millisecond ||
+		cfg.ShutdownTimeout != 3*time.Second ||
+		cfg.GatewayBaseURL != "http://gateway.test:8000" || cfg.GatewayRoutesPath != "/routes/api/v1/routes/{route_id}" ||
+		cfg.PathsHTTPTimeout != 700*time.Millisecond || cfg.PathsMaxResponseBytes != 4096 || cfg.GPSRetention != 48*time.Hour || cfg.GPSSafetyMargin != 0 {
+		t.Fatalf("unexpected overrides: %+v", cfg)
+	}
+}
+
+func TestParseRejectsInvalidValues(t *testing.T) {
+	tests := []struct {
+		name, key, value string
+	}{
+		{"empty port", "GPS_HTTP_PORT", ""},
+		{"invalid port", "GPS_HTTP_PORT", "abc"},
+		{"zero port", "GPS_HTTP_PORT", "0"},
+		{"large port", "GPS_HTTP_PORT", "65536"},
+		{"missing redis host", "GPS_REDIS_ADDR", ":6379"},
+		{"missing redis port", "GPS_REDIS_ADDR", "redis"},
+		{"invalid redis port", "GPS_REDIS_ADDR", "redis:zero"},
+		{"zero dial timeout", "GPS_REDIS_DIAL_TIMEOUT", "0s"},
+		{"negative ping timeout", "GPS_REDIS_PING_TIMEOUT", "-1s"},
+		{"invalid shutdown timeout", "GPS_SHUTDOWN_TIMEOUT", "twenty"},
+		{"URL with user info", "GPS_GATEWAY_BASE_URL", "http://user@gateway.test:8000"},
+		{"URL with path", "GPS_GATEWAY_BASE_URL", "http://gateway.test:8000/api/v1"},
+		{"URL without scheme", "GPS_GATEWAY_BASE_URL", "gateway.test:8000"},
+		{"legacy Python URL", "GPS_PATHS_BASE_URL", "http://python:8000"},
+		{"legacy Operations URL", "GPS_OPERATIONS_EVENT_URL", "http://operations:8080/events"},
+		{"invalid HTTP timeout", "GPS_PATHS_HTTP_TIMEOUT", "0s"},
+		{"zero response limit", "GPS_PATHS_MAX_RESPONSE_BYTES", "0"},
+		{"huge response limit", "GPS_PATHS_MAX_RESPONSE_BYTES", "67108865"},
+		{"short retention", "GPS_POSITION_RETENTION", "23h"},
+		{"negative safety margin", "GPS_POSITION_SAFETY_MARGIN", "-1s"},
+		{"zero observation age", "GPS_MAX_OBSERVATION_AGE", "0s"},
+		{"large future skew", "GPS_FUTURE_SKEW", "6m"},
+		{"short body limit", "GPS_MAX_OBSERVATION_BYTES", "16"},
+		{"zero request timeout", "GPS_REQUEST_TIMEOUT", "0s"},
+		{"zero read page limit", "GPS_READ_MAX_PAGE_LIMIT", "0"},
+		{"large read page limit", "GPS_READ_MAX_PAGE_LIMIT", "101"},
+		{"small read response", "GPS_READ_MAX_RESPONSE_BYTES", "100"},
+		{"large read timeout", "GPS_READ_REQUEST_TIMEOUT", "31s"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Parse(lookup(map[string]string{tt.key: tt.value}))
+			if err == nil || !strings.Contains(err.Error(), tt.key) {
+				t.Fatalf("expected error naming %s, got %v", tt.key, err)
+			}
+		})
+	}
+}
+
+func TestOperationsDeliveryConfiguration(t *testing.T) {
+	cfg, err := Parse(lookup(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.OperationsEnabled || cfg.GatewayEventsPath != "" || cfg.OperationsToken != "" {
+		t.Fatal("delivery must be off by default")
+	}
+	valid := map[string]string{"GPS_OPERATIONS_DELIVERY_ENABLED": "true", "GPS_GATEWAY_BASE_URL": "http://gateway.test:8080", "GPS_GATEWAY_EVENTS_PATH": "/api/v1/gps-events", "GPS_OPERATIONS_TOKEN": "synthetic-test-token", "GPS_OPERATIONS_HTTP_TIMEOUT": "2s", "GPS_OUTBOX_LEASE": "4s"}
+	cfg, err = Parse(lookup(valid))
+	if err != nil || !cfg.OperationsEnabled {
+		t.Fatalf("enabled config: %+v %v", cfg, err)
+	}
+	for _, key := range []string{"GPS_GATEWAY_BASE_URL", "GPS_GATEWAY_EVENTS_PATH", "GPS_OPERATIONS_TOKEN"} {
+		copy := map[string]string{}
+		for k, v := range valid {
+			copy[k] = v
+		}
+		delete(copy, key)
+		if _, err := Parse(lookup(copy)); err == nil {
+			t.Fatalf("missing %s accepted", key)
+		}
+	}
+	for _, tc := range []struct{ key, value string }{{"GPS_OUTBOX_LEASE", "2s"}, {"GPS_OUTBOX_WORKERS", "0"}, {"GPS_OUTBOX_MAX_PER_HOUR", "0"}, {"GPS_OUTBOX_DELIVERED_RETENTION", "0s"}, {"GPS_GATEWAY_EVENTS_PATH", "//operations/events"}} {
+		copy := map[string]string{}
+		for k, v := range valid {
+			copy[k] = v
+		}
+		copy[tc.key] = tc.value
+		if _, err := Parse(lookup(copy)); err == nil {
+			t.Fatalf("invalid %s accepted", tc.key)
+		}
+	}
+}

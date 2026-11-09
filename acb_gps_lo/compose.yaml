@@ -1,0 +1,99 @@
+name: acb-gps-lo
+
+services:
+  acb_gps_lo:
+    image: acb-gps-lo:dev
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      GPS_HTTP_PORT: ${GPS_HTTP_PORT:-8080}
+      GPS_REDIS_ADDR: ${GPS_REDIS_ADDR:-acb_gps_redis:6379}
+      GPS_REDIS_DIAL_TIMEOUT: ${GPS_REDIS_DIAL_TIMEOUT:-2s}
+      GPS_REDIS_PING_TIMEOUT: ${GPS_REDIS_PING_TIMEOUT:-1s}
+      GPS_SHUTDOWN_TIMEOUT: ${GPS_SHUTDOWN_TIMEOUT:-20s}
+      GPS_GATEWAY_BASE_URL: ${GPS_GATEWAY_BASE_URL:-}
+      GPS_GATEWAY_ROUTES_PATH: ${GPS_GATEWAY_ROUTES_PATH:-}
+      GPS_GATEWAY_ROUTES_TOKEN: ${GPS_GATEWAY_ROUTES_TOKEN:-}
+      GPS_GATEWAY_EVENTS_PATH: ${GPS_GATEWAY_EVENTS_PATH:-}
+      # Sólo para detectar configuraciones anteriores y rechazarlas al arrancar.
+      GPS_PATHS_BASE_URL: ${GPS_PATHS_BASE_URL:-}
+      GPS_OPERATIONS_EVENT_URL: ${GPS_OPERATIONS_EVENT_URL:-}
+      GPS_PATHS_HTTP_TIMEOUT: ${GPS_PATHS_HTTP_TIMEOUT:-3s}
+      GPS_PATHS_MAX_RESPONSE_BYTES: ${GPS_PATHS_MAX_RESPONSE_BYTES:-2097152}
+      GPS_POSITION_RETENTION: ${GPS_POSITION_RETENTION:-24h}
+      GPS_POSITION_SAFETY_MARGIN: ${GPS_POSITION_SAFETY_MARGIN:-5m}
+      GPS_MAX_OBSERVATION_AGE: ${GPS_MAX_OBSERVATION_AGE:-15m}
+      GPS_FUTURE_SKEW: ${GPS_FUTURE_SKEW:-30s}
+      GPS_MAX_OBSERVATION_BYTES: ${GPS_MAX_OBSERVATION_BYTES:-4096}
+      GPS_REQUEST_TIMEOUT: ${GPS_REQUEST_TIMEOUT:-5s}
+      GPS_CONTROL_API_ENABLED: ${GPS_CONTROL_API_ENABLED:-false}
+      GPS_READ_API_ENABLED: ${GPS_READ_API_ENABLED:-false}
+      GPS_GATEWAY_INTERNAL_TOKEN: ${GPS_GATEWAY_INTERNAL_TOKEN:-}
+      GPS_CONTROL_CREDENTIAL_KEY: ${GPS_CONTROL_CREDENTIAL_KEY:-}
+      GPS_CONTROL_ISSUANCE_WINDOW: ${GPS_CONTROL_ISSUANCE_WINDOW:-10m}
+      GPS_CONTROL_REQUEST_TIMEOUT: ${GPS_CONTROL_REQUEST_TIMEOUT:-5s}
+      GPS_POLICIES_FILE: ${GPS_POLICIES_FILE:-}
+      GPS_READ_MAX_PAGE_LIMIT: ${GPS_READ_MAX_PAGE_LIMIT:-100}
+      GPS_READ_MAX_RESPONSE_BYTES: ${GPS_READ_MAX_RESPONSE_BYTES:-1048576}
+      GPS_READ_REQUEST_TIMEOUT: ${GPS_READ_REQUEST_TIMEOUT:-5s}
+      GPS_RECOVERY_POLL: ${GPS_RECOVERY_POLL:-2s}
+      GPS_OPERATIONS_DELIVERY_ENABLED: ${GPS_OPERATIONS_DELIVERY_ENABLED:-false}
+      GPS_OPERATIONS_TOKEN: ${GPS_OPERATIONS_TOKEN:-}
+      GPS_OPERATIONS_HTTP_TIMEOUT: ${GPS_OPERATIONS_HTTP_TIMEOUT:-3s}
+      GPS_OPERATIONS_MAX_RESPONSE_BYTES: ${GPS_OPERATIONS_MAX_RESPONSE_BYTES:-4096}
+      GPS_OUTBOX_WORKERS: ${GPS_OUTBOX_WORKERS:-2}
+      GPS_OUTBOX_POLL: ${GPS_OUTBOX_POLL:-1s}
+      GPS_OUTBOX_LEASE: ${GPS_OUTBOX_LEASE:-10s}
+      GPS_OUTBOX_RETRY_MIN: ${GPS_OUTBOX_RETRY_MIN:-5s}
+      GPS_OUTBOX_RETRY_MAX: ${GPS_OUTBOX_RETRY_MAX:-30m}
+      GPS_OUTBOX_MAX_PER_HOUR: ${GPS_OUTBOX_MAX_PER_HOUR:-60}
+      GPS_OUTBOX_DELIVERED_RETENTION: ${GPS_OUTBOX_DELIVERED_RETENTION:-168h}
+    ports:
+      - "127.0.0.1:${GPS_HOST_PORT:-8079}:${GPS_HTTP_PORT:-8080}"
+    volumes:
+      - ./config/tracking-policies.yaml:/etc/acb-gps/tracking-policies.yaml:ro
+    depends_on:
+      acb_gps_redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/acb-gps", "healthcheck"]
+      interval: 10s
+      timeout: 4s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    stop_grace_period: 30s
+    networks:
+      - gps-net
+
+  acb_gps_redis:
+    image: redis:8.2.9-bookworm@sha256:66b7f4c2f3c6ef1b298bbd7b13c806bc6f71e61f1136a4f58710daf2cb053b21
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - ${REDIS_AOF_FSYNC:-always}
+      - --maxmemory
+      - ${REDIS_MAXMEMORY:-512mb}
+      - --maxmemory-policy
+      - noeviction
+    volumes:
+      - gps-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    stop_grace_period: 30s
+    networks:
+      - gps-net
+
+volumes:
+  gps-redis-data:
+
+networks:
+  gps-net:

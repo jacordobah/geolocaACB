@@ -173,8 +173,6 @@ class KmzReaderImpl:
                             default="Unnamed",
                             namespaces=NS,
                         )
-                        name = _route_display_name(name, folder_path)
-
                         description = placemark.findtext(
                             "kml:description",
                             namespaces=NS,
@@ -187,11 +185,12 @@ class KmzReaderImpl:
                             coordinates = read_coordinates(line_string)
 
                             if len(coordinates) >= 2:
+                                route_name = _route_display_name(name, folder_path)
                                 routes.append(
                                     Route(
-                                        name=name,
+                                        name=route_name,
                                         coordinates=coordinates,
-                                        code=route_code(name),
+                                        code=route_code(route_name),
                                         folder_path=folder_path,
                                         route_code=route_group_code(folder_path),
                                         day_shift=day_shift(folder_path),

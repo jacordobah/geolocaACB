@@ -1,0 +1,9 @@
+.git
+.env
+.env.*
+!.env.example
+README.md
+**/*_test.go
+testdata
+*.log
+*.exe

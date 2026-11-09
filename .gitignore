@@ -2,7 +2,10 @@ AGENTS.md
 .opencode/
 KMZ_prueba
 
-
 # python
 
 __pycache__/
+
+# otros
+
+docs/geolocalizacion

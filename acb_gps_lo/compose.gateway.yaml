@@ -1,0 +1,12 @@
+# Optional integration overlay. The Gateway team supplies the external network.
+# This file never creates or modifies the Gateway service or its network.
+services:
+  acb_gps_lo:
+    networks:
+      - gps-net
+      - gateway-net
+
+networks:
+  gateway-net:
+    external: true
+    name: ${GPS_GATEWAY_NETWORK:?Set GPS_GATEWAY_NETWORK to the agreed external Docker network}

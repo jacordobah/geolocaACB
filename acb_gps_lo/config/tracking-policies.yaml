@@ -1,0 +1,18 @@
+# SOLO EJEMPLO SINTETICO. Valores no aprobados para seguimiento operativo.
+# Publicar una definicion nueva con otro policy_id y revision; no alterar IDs usados.
+schema_version: 1
+policies:
+  - policy_id: demo-school-v1
+    revision: 1
+    geographic:
+      corridor_radius_meters: 30
+      point_radius_meters: 20
+      max_accuracy_meters: 25
+    transitions:
+      arrival_observations: 2
+      arrival_dwell: 1s
+      deviation_observations: 2
+      deviation_dwell: 1s
+      recovery_observations: 2
+      recovery_dwell: 1s
+      max_sample_gap: 5s
