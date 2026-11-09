@@ -56,6 +56,8 @@ func (h *Control) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.status(ctx, w, r, p)
 	case r.Method == http.MethodPost && r.PathValue("tracking_id") != "":
 		h.finish(ctx, w, r, p)
+	case r.Method == http.MethodPatch && r.PathValue("tracking_id") != "" && strings.HasSuffix(r.URL.Path, "/disable"):
+		h.finish(ctx, w, r, p)
 	default:
 		writeError(w, 405, "method_not_allowed")
 	}

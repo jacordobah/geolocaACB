@@ -90,6 +90,51 @@ func TestReadyDoesNotClaimFutureCapabilities(t *testing.T) {
 	}
 }
 
+func TestTrackingControlRoutesDispatch(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{"status", http.MethodGet, "/api/v1/tracking-sessions/session-1"},
+		{"control", http.MethodGet, "/api/v1/tracking-sessions/session-1/control"},
+		{"finish", http.MethodPost, "/api/v1/tracking-sessions/session-1/finish"},
+		{"disable", http.MethodPatch, "/api/v1/tracking-sessions/session-1/disable"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var seen string
+			stub := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				seen = r.Method + " " + r.URL.Path
+				w.WriteHeader(http.StatusOK)
+			})
+			handler := HandlerWithReads(fakeRedis{func(context.Context) error { return nil }}, time.Second, testLogger(), nil, stub, nil)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, httptest.NewRequest(tt.method, tt.path, nil))
+			if response.Code != http.StatusOK {
+				t.Fatalf("status=%d, wanted %d", response.Code, http.StatusOK)
+			}
+			if want := tt.method + " " + tt.path; seen != want {
+				t.Fatalf("handler saw %q, wanted %q", seen, want)
+			}
+		})
+	}
+}
+
+func TestTrackingControlRoutesAbsentWithoutHandler(t *testing.T) {
+	for _, path := range []string{
+		"/api/v1/tracking-sessions/session-1/control",
+		"/api/v1/tracking-sessions/session-1/disable",
+	} {
+		response := httptest.NewRecorder()
+		Handler(fakeRedis{func(context.Context) error { return nil }}, time.Second, testLogger()).ServeHTTP(
+			response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("%s status=%d, wanted %d", path, response.Code, http.StatusNotFound)
+		}
+	}
+}
+
 func TestServeDrainsInflightRequest(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

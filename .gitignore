@@ -9,3 +9,8 @@ __pycache__/
 # otros
 
 docs/geolocalizacion
+
+# variables locales y secretos de despliegue
+.env
+.env.*
+!.env.example

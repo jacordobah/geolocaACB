@@ -38,7 +38,9 @@ func HandlerWithReads(redis Pinger, pingTimeout time.Duration, logger *slog.Logg
 	if control != nil {
 		mux.Handle("POST /api/v1/tracking-sessions", control)
 		mux.Handle("GET /api/v1/tracking-sessions/{tracking_id}", control)
+		mux.Handle("GET /api/v1/tracking-sessions/{tracking_id}/control", control)
 		mux.Handle("POST /api/v1/tracking-sessions/{tracking_id}/finish", control)
+		mux.Handle("PATCH /api/v1/tracking-sessions/{tracking_id}/disable", control)
 	}
 	if reads != nil {
 		mux.Handle("GET /api/v1/tracking-sessions/{tracking_id}/latest-position", reads)
