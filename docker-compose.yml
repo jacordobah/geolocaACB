@@ -22,6 +22,9 @@ services:
     environment:
       MONGO_URI: mongodb://acb_mongo_db:27017
       MONGO_DATABASE: geolocaacb
+      # Local test values; agree the real radius/accuracy with operations.
+      ACB_FIRST_PE_RADIUS_M: ${ACB_FIRST_PE_RADIUS_M:-50}
+      ACB_FIRST_PE_MAX_ACCURACY_M: ${ACB_FIRST_PE_MAX_ACCURACY_M:-50}
     ports:
       - "127.0.0.1:8000:8000"
     depends_on:
