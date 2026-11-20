@@ -69,6 +69,8 @@ class MongoMapRepository:
         if route is None:
             raise RouteNotFound("Geographic route not found")
         reference = route.get("first_meeting_point_id")
+        if reference is None and route.get("code") == "542":
+            reference = route.get("start_meeting_point_id")
         if reference is None:
             raise FirstMeetingPointNotConfigured("First meeting point is not configured")
         if not isinstance(reference, ObjectId):
@@ -226,6 +228,7 @@ class MongoMapRepository:
             }
             for point in points
         ]
+        geometry_version = str(ObjectId())
         route_documents = []
         for route, resolved, resolved_points in zip(
             routes, endpoints, route_meeting_points
@@ -236,6 +239,12 @@ class MongoMapRepository:
                 "route_code": route.route_code,
                 "code": route.code,
                 "day_shift": route.day_shift,
+                "geometry_version": geometry_version,
+                "association_status": (
+                    "verified"
+                    if resolved.status == "resolved" and resolved_points.point_indices
+                    else "unverified"
+                ),
                 "endpoint_status": resolved.status,
                 "geometry": {
                     "type": "LineString",
@@ -258,7 +267,9 @@ class MongoMapRepository:
             )
             if start_reference is not None:
                 document["start_meeting_point_id"] = start_reference
-                if route.code == "541" and resolved.status == "resolved":
+                if route.code in ("541", "542") and resolved.status == "resolved":
+                    # 541 starts at PE01; 542 starts at the school. Both expose
+                    # the start point so the app and GPS can validate arrival.
                     document["first_meeting_point_id"] = start_reference
             if end_reference is not None:
                 document["end_meeting_point_id"] = end_reference
@@ -338,6 +349,27 @@ class MongoMapRepository:
         serialized = dict(document)
         if "_id" in serialized:
             serialized["_id"] = str(serialized["_id"])
+        if "geometry" in serialized:
+            if "geometry_version" not in serialized and "_id" in serialized:
+                # Compatibility for imports created before GPS metadata existed.
+                serialized["geometry_version"] = serialized["_id"]
+            if "association_status" not in serialized:
+                references = serialized.get("meeting_point_ids")
+                serialized["association_status"] = (
+                    "verified"
+                    if serialized.get("endpoint_status") == "resolved"
+                    and isinstance(references, (list, tuple))
+                    and len(references) > 0
+                    else "unverified"
+                )
+        if (
+            "first_meeting_point_id" not in serialized
+            and serialized.get("code") == "542"
+            and serialized.get("start_meeting_point_id") is not None
+        ):
+            serialized["first_meeting_point_id"] = serialized[
+                "start_meeting_point_id"
+            ]
         for key in (
             "first_meeting_point_id",
             "start_meeting_point_id",

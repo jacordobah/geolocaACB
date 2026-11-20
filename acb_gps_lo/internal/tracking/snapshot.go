@@ -111,6 +111,12 @@ func BuildSnapshot(route routes.Route, policy GeographicPolicy) (GeographicSnaps
 	return BuildSnapshotWithTransitions(route, policy, nil)
 }
 
+// A 542 route starts at the school and ends at its last meeting point. The
+// first point ID can therefore be the school, which is not in MeetingPoints.
+func isReturnRoute(route routes.Route) bool {
+	return route.Code != nil && strings.TrimSpace(*route.Code) == "542"
+}
+
 // BuildSnapshotWithTransitions binds explicit temporal rules to the immutable
 // geographic reference. A nil policy preserves pre-Increment-7 snapshots.
 func BuildSnapshotWithTransitions(route routes.Route, policy GeographicPolicy, transitions *TransitionPolicy) (GeographicSnapshot, error) {
@@ -142,17 +148,28 @@ func BuildSnapshotWithTransitions(route routes.Route, policy GeographicPolicy, t
 		seen[point.ID] = true
 	}
 	first := route.MeetingPoints[0].ID
-	if route.Endpoints.FirstPointID != nil && *route.Endpoints.FirstPointID != first {
-		return GeographicSnapshot{}, ErrRouteIneligible
-	}
-	if route.Endpoints.Start.PointID != nil && *route.Endpoints.Start.PointID != first {
-		return GeographicSnapshot{}, ErrRouteIneligible
-	}
-	if route.Endpoints.End.PointID != nil && seen[*route.Endpoints.End.PointID] && *route.Endpoints.End.PointID != route.MeetingPoints[len(route.MeetingPoints)-1].ID {
-		return GeographicSnapshot{}, ErrRouteIneligible
+	last := route.MeetingPoints[len(route.MeetingPoints)-1].ID
+	returnTrip := isReturnRoute(route)
+	if returnTrip {
+		if route.Endpoints.End.PointID != nil && *route.Endpoints.End.PointID != last {
+			return GeographicSnapshot{}, ErrRouteIneligible
+		}
+	} else {
+		if route.Endpoints.FirstPointID != nil && *route.Endpoints.FirstPointID != first {
+			return GeographicSnapshot{}, ErrRouteIneligible
+		}
+		if route.Endpoints.Start.PointID != nil && *route.Endpoints.Start.PointID != first {
+			return GeographicSnapshot{}, ErrRouteIneligible
+		}
+		if route.Endpoints.End.PointID != nil && seen[*route.Endpoints.End.PointID] && *route.Endpoints.End.PointID != last {
+			return GeographicSnapshot{}, ErrRouteIneligible
+		}
 	}
 	for _, missing := range route.Unavailable {
-		if missing == "first_point_membership" || missing == "meeting_point_association_provenance" {
+		if missing == "meeting_point_association_provenance" {
+			return GeographicSnapshot{}, ErrRouteIneligible
+		}
+		if missing == "first_point_membership" && !returnTrip {
 			return GeographicSnapshot{}, ErrRouteIneligible
 		}
 	}
@@ -219,19 +236,36 @@ func (s GeographicSnapshot) Validate() error {
 }
 
 // OperationalReady is deliberately stricter than syntactic and mathematical
-// validity. The current Python response cannot satisfy it.
+// validity. A 542 route starts at the school; a 541 route starts at PE01.
 func (s GeographicSnapshot) OperationalReady() error {
 	if err := s.Validate(); err != nil {
 		return err
 	}
 	r := s.Route
-	if r.GeometryVersion == nil || strings.TrimSpace(*r.GeometryVersion) == "" || r.AssociationStatus == nil || *r.AssociationStatus != "verified" || r.Endpoints.Status == nil || *r.Endpoints.Status != "resolved" || r.Endpoints.FirstPointID == nil || r.Endpoints.Start.PointID == nil || r.Endpoints.End.PointID == nil {
+	if r.GeometryVersion == nil || strings.TrimSpace(*r.GeometryVersion) == "" || r.AssociationStatus == nil || *r.AssociationStatus != "verified" || r.Endpoints.Status == nil || *r.Endpoints.Status != "resolved" || r.Endpoints.Start.PointID == nil || r.Endpoints.End.PointID == nil {
 		return ErrRouteIneligible
 	}
+	returnTrip := isReturnRoute(r)
 	for _, missing := range r.Unavailable {
-		if missing == "geometry_version" || missing == "association_status" || missing == "endpoint_status" || missing == "first_point_membership" || missing == "meeting_point_association_provenance" {
+		if missing == "geometry_version" || missing == "association_status" || missing == "endpoint_status" || missing == "meeting_point_association_provenance" {
 			return ErrRouteIneligible
 		}
+		if missing == "first_point_membership" && !returnTrip {
+			return ErrRouteIneligible
+		}
+	}
+	if len(r.MeetingPoints) == 0 {
+		return ErrRouteIneligible
+	}
+	last := r.MeetingPoints[len(r.MeetingPoints)-1].ID
+	if returnTrip {
+		if *r.Endpoints.End.PointID != last {
+			return ErrRouteIneligible
+		}
+		return nil
+	}
+	if r.Endpoints.FirstPointID == nil {
+		return ErrRouteIneligible
 	}
 	if *r.Endpoints.FirstPointID != r.MeetingPoints[0].ID || *r.Endpoints.Start.PointID != r.MeetingPoints[0].ID {
 		return ErrRouteIneligible
