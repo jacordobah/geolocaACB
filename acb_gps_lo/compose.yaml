@@ -8,6 +8,10 @@ services:
       dockerfile: Dockerfile
     environment:
       GPS_HTTP_PORT: ${GPS_HTTP_PORT:-8080}
+      GPS_TLS_CERT_FILE: /run/acb-tls/gps.crt
+      GPS_TLS_KEY_FILE: /run/acb-tls/gps.key
+      GPS_REDIS_TLS_CA_FILE: /run/acb-tls/ca.crt
+      SSL_CERT_FILE: /run/acb-tls/ca.crt
       GPS_REDIS_ADDR: ${GPS_REDIS_ADDR:-acb_gps_redis:6379}
       GPS_REDIS_DIAL_TIMEOUT: ${GPS_REDIS_DIAL_TIMEOUT:-2s}
       GPS_REDIS_PING_TIMEOUT: ${GPS_REDIS_PING_TIMEOUT:-1s}
@@ -53,6 +57,9 @@ services:
       - "127.0.0.1:${GPS_HOST_PORT:-8079}:${GPS_HTTP_PORT:-8080}"
     volumes:
       - ./config/tracking-policies.yaml:/etc/acb-gps/tracking-policies.yaml:ro
+      - ${ACB_TLS_DIR:?Set external ACB_TLS_DIR}/gps.crt:/run/acb-tls/gps.crt:ro
+      - ${ACB_TLS_DIR:?Set external ACB_TLS_DIR}/gps.key:/run/acb-tls/gps.key:ro
+      - ${ACB_TLS_DIR:?Set external ACB_TLS_DIR}/ca.crt:/run/acb-tls/ca.crt:ro
     depends_on:
       acb_gps_redis:
         condition: service_healthy
@@ -71,6 +78,18 @@ services:
     image: redis:8.2.9-bookworm@sha256:66b7f4c2f3c6ef1b298bbd7b13c806bc6f71e61f1136a4f58710daf2cb053b21
     command:
       - redis-server
+      - --port
+      - "0"
+      - --tls-port
+      - "6379"
+      - --tls-cert-file
+      - /run/acb-tls/redis-gps.crt
+      - --tls-key-file
+      - /run/acb-tls/redis-gps.key
+      - --tls-ca-cert-file
+      - /run/acb-tls/ca.crt
+      - --tls-auth-clients
+      - "no"
       - --appendonly
       - "yes"
       - --appendfsync
@@ -81,8 +100,11 @@ services:
       - noeviction
     volumes:
       - gps-redis-data:/data
+      - ${ACB_TLS_DIR:?Set external ACB_TLS_DIR}/redis-gps.crt:/run/acb-tls/redis-gps.crt:ro
+      - ${ACB_TLS_DIR:?Set external ACB_TLS_DIR}/redis-gps.key:/run/acb-tls/redis-gps.key:ro
+      - ${ACB_TLS_DIR:?Set external ACB_TLS_DIR}/ca.crt:/run/acb-tls/ca.crt:ro
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "--tls", "--cacert", "/run/acb-tls/ca.crt", "-h", "acb_gps_redis", "ping"]
       interval: 10s
       timeout: 3s
       retries: 5
