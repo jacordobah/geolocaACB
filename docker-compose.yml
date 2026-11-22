@@ -22,8 +22,32 @@ services:
     environment:
       MONGO_URI: mongodb://acb_mongo_db:27017
       MONGO_DATABASE: geolocaacb
+    command:
+      - uvicorn
+      - acb_path_lo.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --ssl-certfile
+      - /run/acb-tls/paths.crt
+      - --ssl-keyfile
+      - /run/acb-tls/paths.key
     ports:
       - "127.0.0.1:8000:8000"
+    volumes:
+      - type: bind
+        source: ${ACB_TLS_DIR:?Set external ACB_TLS_DIR}/paths.crt
+        target: /run/acb-tls/paths.crt
+        read_only: true
+      - type: bind
+        source: ${ACB_TLS_DIR:?Set external ACB_TLS_DIR}/paths.key
+        target: /run/acb-tls/paths.key
+        read_only: true
+      - type: bind
+        source: ${ACB_TLS_DIR:?Set external ACB_TLS_DIR}/ca.crt
+        target: /run/acb-tls/ca.crt
+        read_only: true
     depends_on:
       acb_mongo_db:
         condition: service_healthy
@@ -33,7 +57,7 @@ services:
           "CMD",
           "python",
           "-c",
-          "import urllib.request; urllib.request.urlopen('http://localhost:8000/openapi.json')",
+          "import ssl, urllib.request; c=ssl.create_default_context(cafile='/run/acb-tls/ca.crt'); urllib.request.urlopen('https://geoloca-api:8000/openapi.json', context=c, timeout=3)",
         ]
       interval: 10s
       timeout: 5s
@@ -47,8 +71,14 @@ services:
 
   acb_gps_lo:
     environment:
-      GPS_GATEWAY_BASE_URL: ${GPS_GATEWAY_BASE_URL:-http://api-gateway:5062}
+      GPS_GATEWAY_BASE_URL: https://api-gateway:5062
       GPS_GATEWAY_ROUTES_PATH: ${GPS_GATEWAY_ROUTES_PATH:-/api/v1/routes/{route_id}}
+      SSL_CERT_FILE: /run/acb-tls/ca.crt
+    volumes:
+      - type: bind
+        source: ${ACB_TLS_DIR:?Set external ACB_TLS_DIR}/ca.crt
+        target: /run/acb-tls/ca.crt
+        read_only: true
     networks:
       gps-net: {}
       acb-net:
