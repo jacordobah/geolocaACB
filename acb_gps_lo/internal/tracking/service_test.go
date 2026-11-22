@@ -199,13 +199,14 @@ func TestGeographicEligibilityAndGeometry(t *testing.T) {
 	route.AssociationStatus = nil
 	route.Unavailable = []string{"geometry_version", "association_status"}
 	snapshot, err := BuildSnapshot(route, policy)
-	if err != nil || !errors.Is(snapshot.OperationalReady(), ErrRouteIneligible) {
+	if err != nil || snapshot.OperationalReady() != nil {
 		t.Fatalf("current Python contract: %v", err)
 	}
 	route = syntheticRoute()
 	route.MeetingPoints[0], route.MeetingPoints[1] = route.MeetingPoints[1], route.MeetingPoints[0]
-	if _, err := BuildSnapshot(route, policy); !errors.Is(err, ErrRouteIneligible) {
-		t.Fatalf("wrong PE order: %v", err)
+	reordered, err := BuildSnapshot(route, policy)
+	if err != nil || reordered.Route.MeetingPoints[0].ID != route.MeetingPoints[0].ID {
+		t.Fatalf("available PE order must be preserved: %v", err)
 	}
 	route = syntheticRoute()
 	route.Geometry.Coordinates[1].Latitude = 85
@@ -229,7 +230,7 @@ func TestGeographicEligibilityAndGeometry(t *testing.T) {
 	}
 }
 
-func TestCurrentPythonContractCannotProvisionGeographicSession(t *testing.T) {
+func TestCurrentPythonContractCanProvisionGeographicSession(t *testing.T) {
 	const response = `{"_id":"synthetic-route","name":"school route","geometry":{"type":"LineString","coordinates":[[-74.1,4.6],[-74.1005,4.6]]},"endpoint_status":"resolved","first_meeting_point_id":"PE01","start_meeting_point_id":"PE01","end_meeting_point_id":"PE02","meeting_points":[{"_id":"PE01","name":"PE01","kind":"meeting_point","location":{"type":"Point","coordinates":[-74.1,4.6]}},{"_id":"PE02","name":"PE02","kind":"meeting_point","location":{"type":"Point","coordinates":[-74.1005,4.6]}}]}`
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/routes/synthetic-route" {
@@ -255,8 +256,56 @@ func TestCurrentPythonContractCannotProvisionGeographicSession(t *testing.T) {
 	repo := &fakeRepository{}
 	service, _ := NewService(repo, time.Minute, time.Second, nil, nil)
 	_, token, err := service.ProvisionGeographic(context.Background(), reader, "guide", "trip", "synthetic-route", policy)
-	if !errors.Is(err, ErrRouteIneligible) || token != "" || repo.provisionCalls != 0 {
-		t.Fatalf("unsafe provision: token=%q calls=%d err=%v", token, repo.provisionCalls, err)
+	if err != nil || token == "" || repo.provisionCalls != 1 || repo.snapshot.Validate() != nil {
+		t.Fatalf("functional provision: token_issued=%v calls=%d err=%v", token != "", repo.provisionCalls, err)
+	}
+}
+
+func TestCorridorOnlyAndSchoolOriginRemainUsable(t *testing.T) {
+	policy := GeographicPolicy{CorridorRadiusMeters: 30, PointRadiusMeters: 20, MaxAccuracyMeters: 25}
+	for _, tc := range []struct {
+		name string
+		route routes.Route
+		points int
+	}{
+		{name: "corridor only", route: func() routes.Route {
+			r := syntheticRoute()
+			r.MeetingPoints = nil
+			r.Unavailable = []string{"meeting_point_association_provenance", "endpoint_status"}
+			return r
+		}(), points: 0},
+		{name: "541 school destination", route: func() routes.Route {
+			r := syntheticRoute()
+			code, school := "541", "school-id"
+			r.Code = &code
+			r.Endpoints.End.PointID = &school
+			return r
+		}(), points: 2},
+		{name: "542 school origin", route: func() routes.Route {
+			r := syntheticRoute()
+			code, school := "542", "school-id"
+			r.Code = &code
+			r.Endpoints.Start.PointID = &school
+			r.Endpoints.FirstPointID = nil
+			r.GeometryVersion = nil
+			r.AssociationStatus = nil
+			return r
+		}(), points: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			snapshot, err := BuildSnapshotWithTransitions(tc.route, policy, testTransitionPolicy())
+			if err != nil || snapshot.OperationalReady() != nil {
+				t.Fatalf("route not usable: %v", err)
+			}
+			accuracy := 5.0
+			result, err := snapshot.Evaluate(Position{Longitude: -74.1005, Latitude: 4.6, AccuracyMeters: &accuracy})
+			if err != nil || result.RouteStatus != "inside" || len(result.MeetingPoints) != tc.points {
+				t.Fatalf("evaluation: %+v %v", result, err)
+			}
+			if snapshot.Validate() != nil {
+				t.Fatal("snapshot hash changed after validation")
+			}
+		})
 	}
 }
 

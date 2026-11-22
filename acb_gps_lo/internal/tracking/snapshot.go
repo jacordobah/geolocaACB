@@ -12,7 +12,7 @@ import (
 	"github.com/jacordobah/geolocaACB/ACB_GPS_Lo/internal/routes"
 )
 
-var ErrRouteIneligible = errors.New("route is not authorized for geographic tracking")
+var ErrRouteIneligible = errors.New("route is not technically usable for geographic tracking")
 var ErrInvalidGeometry = errors.New("route geometry is unsupported")
 
 // GeographicPolicy is supplied by an authorized internal caller. It has no
@@ -128,9 +128,6 @@ func BuildSnapshotWithTransitions(route routes.Route, policy GeographicPolicy, t
 	if _, err := geo.PrepareRoute(route.Geometry); err != nil {
 		return GeographicSnapshot{}, fmt.Errorf("%w: %v", ErrInvalidGeometry, err)
 	}
-	if len(route.MeetingPoints) == 0 {
-		return GeographicSnapshot{}, ErrRouteIneligible
-	}
 	seen := make(map[string]bool, len(route.MeetingPoints))
 	for _, point := range route.MeetingPoints {
 		if !ValidID(point.ID) || seen[point.ID] || strings.TrimSpace(point.Name) == "" || point.Kind != "meeting_point" {
@@ -141,21 +138,8 @@ func BuildSnapshotWithTransitions(route routes.Route, policy GeographicPolicy, t
 		}
 		seen[point.ID] = true
 	}
-	first := route.MeetingPoints[0].ID
-	if route.Endpoints.FirstPointID != nil && *route.Endpoints.FirstPointID != first {
-		return GeographicSnapshot{}, ErrRouteIneligible
-	}
-	if route.Endpoints.Start.PointID != nil && *route.Endpoints.Start.PointID != first {
-		return GeographicSnapshot{}, ErrRouteIneligible
-	}
-	if route.Endpoints.End.PointID != nil && seen[*route.Endpoints.End.PointID] && *route.Endpoints.End.PointID != route.MeetingPoints[len(route.MeetingPoints)-1].ID {
-		return GeographicSnapshot{}, ErrRouteIneligible
-	}
-	for _, missing := range route.Unavailable {
-		if missing == "first_point_membership" || missing == "meeting_point_association_provenance" {
-			return GeographicSnapshot{}, ErrRouteIneligible
-		}
-	}
+	// Endpoint and first-point references are provenance metadata. Geographic
+	// evaluation only uses the corridor and the valid points actually supplied.
 	// JSON round trip detaches slices and pointer metadata from the HTTP model.
 	b, err := json.Marshal(route)
 	if err != nil {
@@ -218,25 +202,11 @@ func (s GeographicSnapshot) Validate() error {
 	return nil
 }
 
-// OperationalReady is deliberately stricter than syntactic and mathematical
-// validity. The current Python response cannot satisfy it.
+// OperationalReady checks technical usability only. BuildSnapshot already
+// validates the route geometry, policy and every supplied meeting point. The
+// content hash proves snapshot integrity; it is not an administrative approval.
 func (s GeographicSnapshot) OperationalReady() error {
-	if err := s.Validate(); err != nil {
-		return err
-	}
-	r := s.Route
-	if r.GeometryVersion == nil || strings.TrimSpace(*r.GeometryVersion) == "" || r.AssociationStatus == nil || *r.AssociationStatus != "verified" || r.Endpoints.Status == nil || *r.Endpoints.Status != "resolved" || r.Endpoints.FirstPointID == nil || r.Endpoints.Start.PointID == nil || r.Endpoints.End.PointID == nil {
-		return ErrRouteIneligible
-	}
-	for _, missing := range r.Unavailable {
-		if missing == "geometry_version" || missing == "association_status" || missing == "endpoint_status" || missing == "first_point_membership" || missing == "meeting_point_association_provenance" {
-			return ErrRouteIneligible
-		}
-	}
-	if *r.Endpoints.FirstPointID != r.MeetingPoints[0].ID || *r.Endpoints.Start.PointID != r.MeetingPoints[0].ID {
-		return ErrRouteIneligible
-	}
-	return nil
+	return s.Validate()
 }
 
 func (s GeographicSnapshot) Evaluate(position Position) (*GeographicResult, error) {
