@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"log/slog"
 	"net"
@@ -64,10 +66,26 @@ func run(logger *slog.Logger, args []string) error {
 	}
 
 	redis.SetLogger(redisLog{logger})
-	client := redis.NewClient(&redis.Options{
+	redisOptions := &redis.Options{
 		Addr: cfg.RedisAddr, DialTimeout: cfg.RedisDialTimeout,
 		ReadTimeout: cfg.RedisPingTimeout, WriteTimeout: cfg.RedisPingTimeout,
-	})
+	}
+	if caFile := os.Getenv("GPS_REDIS_TLS_CA_FILE"); caFile != "" {
+		roots := x509.NewCertPool()
+		pem, err := os.ReadFile(caFile)
+		if err != nil {
+			return fmt.Errorf("read Redis TLS CA: %w", err)
+		}
+		if !roots.AppendCertsFromPEM(pem) {
+			return fmt.Errorf("Redis TLS CA contains no certificates")
+		}
+		host, _, err := net.SplitHostPort(cfg.RedisAddr)
+		if err != nil {
+			return err
+		}
+		redisOptions.TLSConfig = &tls.Config{RootCAs: roots, ServerName: host, MinVersion: tls.VersionTLS12}
+	}
+	client := redis.NewClient(redisOptions)
 	defer client.Close()
 	store, err := redisstore.New(client, cfg.GPSRetention, cfg.GPSSafetyMargin)
 	if err != nil {
@@ -128,6 +146,16 @@ func run(logger *slog.Logger, args []string) error {
 		return fmt.Errorf("listen HTTP: %w", err)
 	}
 	defer listener.Close()
+	if certFile, keyFile := os.Getenv("GPS_TLS_CERT_FILE"), os.Getenv("GPS_TLS_KEY_FILE"); certFile != "" || keyFile != "" {
+		if certFile == "" || keyFile == "" {
+			return fmt.Errorf("GPS TLS certificate and key must both be set")
+		}
+		certificate, err := tls.LoadX509KeyPair(certFile, keyFile)
+		if err != nil {
+			return fmt.Errorf("load GPS TLS identity: %w", err)
+		}
+		listener = tls.NewListener(listener, &tls.Config{Certificates: []tls.Certificate{certificate}, MinVersion: tls.VersionTLS12})
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	workersCtx, stopWorkers := context.WithCancel(ctx)
@@ -172,7 +200,20 @@ func run(logger *slog.Logger, args []string) error {
 
 func checkLocalReadiness(port int, timeout time.Duration) error {
 	client := &http.Client{Timeout: timeout + time.Second}
-	response, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/health/ready", port))
+	scheme, host := "http", "127.0.0.1"
+	if os.Getenv("GPS_TLS_CERT_FILE") != "" {
+		scheme, host = "https", "localhost"
+		roots := x509.NewCertPool()
+		pem, err := os.ReadFile(os.Getenv("SSL_CERT_FILE"))
+		if err != nil {
+			return fmt.Errorf("read GPS TLS CA: %w", err)
+		}
+		if !roots.AppendCertsFromPEM(pem) {
+			return fmt.Errorf("GPS TLS CA contains no certificates")
+		}
+		client.Transport = &http.Transport{TLSClientConfig: &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}, DialContext: (&net.Dialer{Timeout: timeout}).DialContext}
+	}
+	response, err := client.Get(fmt.Sprintf("%s://%s:%d/health/ready", scheme, host, port))
 	if err != nil {
 		return fmt.Errorf("local readiness request: %w", err)
 	}

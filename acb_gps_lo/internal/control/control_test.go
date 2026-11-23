@@ -286,11 +286,11 @@ func TestControlWithIsolatedRedis(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	legacy := syntheticRoute()
-	legacy.GeometryVersion = nil
-	ineligible, _ := control.New(tracker, reader{route: legacy}, policies{}, store, secret[:], 10*time.Minute, nil)
-	if _, err = ineligible.Create(ctx, principal(), "legacy-key", control.CreateRequest{TripID: "test-trip", GuideID: "test-guide", GeoRouteID: "test-route", PolicyID: "test-policy"}); !errors.Is(err, tracking.ErrRouteIneligible) {
-		t.Fatalf("legacy route allowed: %v", err)
+	invalid := syntheticRoute()
+	invalid.Geometry.Coordinates[1].Latitude = 85
+	ineligible, _ := control.New(tracker, reader{route: invalid}, policies{}, store, secret[:], 10*time.Minute, nil)
+	if _, err = ineligible.Create(ctx, principal(), "invalid-geometry-key", control.CreateRequest{TripID: "test-trip", GuideID: "test-guide", GeoRouteID: "test-route", PolicyID: "test-policy"}); !errors.Is(err, tracking.ErrInvalidGeometry) {
+		t.Fatalf("invalid geometry allowed: %v", err)
 	}
 	request := control.CreateRequest{TripID: "test-trip", GuideID: "test-guide", GeoRouteID: "test-route", PolicyID: "test-policy"}
 	p := principal()

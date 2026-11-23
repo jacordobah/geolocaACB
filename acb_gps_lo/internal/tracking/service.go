@@ -79,8 +79,8 @@ func (s *Service) Provision(ctx context.Context, guideID, tripID, routeID string
 	return s.issue(ctx, guideID, tripID, routeID, nil)
 }
 
-// ProvisionGeographic is internal only. Python's present response can be
-// queried and assessed, but cannot yet prove operational eligibility.
+// ProvisionGeographic is internal only. It requires technically usable route
+// data, without depending on administrative certification metadata.
 func (s *Service) ProvisionGeographic(ctx context.Context, reader routes.Reader, guideID, tripID, routeID string, policy GeographicPolicy) (Session, string, error) {
 	return s.ProvisionGeographicWithTransitions(ctx, reader, guideID, tripID, routeID, policy, nil)
 }

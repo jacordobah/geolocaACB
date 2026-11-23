@@ -61,7 +61,7 @@ func TestBinaryTrustedGatewayFlow(t *testing.T) {
 			_, _ = io.WriteString(w, routeFixture)
 		case "/paths/api/v1/routes/bad-route":
 			bad := strings.Replace(routeFixture, `"route-integrated"`, `"bad-route"`, 1)
-			bad = strings.Replace(bad, `"geometry_version":"revision-test-1",`, "", 1)
+			bad = strings.Replace(bad, `[-74.1005,4.6005]`, `[-74.1005,85]`, 1)
 			_, _ = io.WriteString(w, bad)
 		default:
 			w.WriteHeader(404)
