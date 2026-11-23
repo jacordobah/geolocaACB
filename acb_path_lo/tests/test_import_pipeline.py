@@ -239,14 +239,21 @@ class ImportPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(routes[1]["day_shift"], "JORNADA MAÑANA")
         self.assertEqual(routes[0]["code"], "541")
         self.assertEqual(routes[0]["endpoint_status"], "resolved")
+        self.assertEqual(routes[0]["association_status"], "verified")
         self.assertEqual(routes[0]["start_meeting_point_id"], points[0]["_id"])
         self.assertEqual(routes[0]["end_meeting_point_id"], points[2]["_id"])
         self.assertEqual(routes[0]["first_meeting_point_id"], points[0]["_id"])
         self.assertEqual(routes[0]["meeting_point_ids"], [points[0]["_id"]])
         self.assertEqual(routes[1]["start_meeting_point_id"], points[2]["_id"])
         self.assertEqual(routes[1]["end_meeting_point_id"], points[1]["_id"])
+        self.assertEqual(routes[1]["first_meeting_point_id"], points[2]["_id"])
         self.assertEqual(routes[1]["meeting_point_ids"], [points[1]["_id"]])
-        self.assertNotIn("first_meeting_point_id", routes[1])
+        self.assertEqual(routes[1]["association_status"], "verified")
+        self.assertEqual(
+            routes[0]["geometry_version"],
+            routes[1]["geometry_version"],
+        )
+        self.assertTrue(routes[0]["geometry_version"])
         self.assertEqual(
             [point["name"] for point in points],
             ["PE01", "PE01", "SAN FRANCISCO DE ASIS"],

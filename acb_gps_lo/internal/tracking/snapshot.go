@@ -111,6 +111,12 @@ func BuildSnapshot(route routes.Route, policy GeographicPolicy) (GeographicSnaps
 	return BuildSnapshotWithTransitions(route, policy, nil)
 }
 
+// A 542 route starts at the school and ends at its last meeting point. The
+// first point ID can therefore be the school, which is not in MeetingPoints.
+func isReturnRoute(route routes.Route) bool {
+	return route.Code != nil && strings.TrimSpace(*route.Code) == "542"
+}
+
 // BuildSnapshotWithTransitions binds explicit temporal rules to the immutable
 // geographic reference. A nil policy preserves pre-Increment-7 snapshots.
 func BuildSnapshotWithTransitions(route routes.Route, policy GeographicPolicy, transitions *TransitionPolicy) (GeographicSnapshot, error) {
@@ -138,8 +144,13 @@ func BuildSnapshotWithTransitions(route routes.Route, policy GeographicPolicy, t
 		}
 		seen[point.ID] = true
 	}
-	// Endpoint and first-point references are provenance metadata. Geographic
-	// evaluation only uses the corridor and the valid points actually supplied.
+	// For a 542 return route, an explicitly supplied final meeting point must
+	// agree with the last supplied point. Absent endpoints and provenance flags
+	// do not prevent technical tracking of a valid corridor.
+	if isReturnRoute(route) && len(route.MeetingPoints) > 0 && route.Endpoints.End.PointID != nil &&
+		*route.Endpoints.End.PointID != route.MeetingPoints[len(route.MeetingPoints)-1].ID {
+		return GeographicSnapshot{}, ErrRouteIneligible
+	}
 	// JSON round trip detaches slices and pointer metadata from the HTTP model.
 	b, err := json.Marshal(route)
 	if err != nil {

@@ -137,6 +137,57 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/tracking-sessions/{tracking_id}/control:
+    parameters: [{ $ref: '#/components/parameters/TrackingID' }]
+    get:
+      tags: [control-condicional]
+      summary: Estado técnico de la sesión (alias de control)
+      x-operational-status: conditional-gateway-credential
+      description: >-
+        Alias de `GET /api/v1/tracking-sessions/{tracking_id}` para el contrato
+        del API Gateway. Misma respuesta, credencial y capacidad.
+      security: [{ serviceBearer: [] }]
+      x-required-capability: tracking:read
+      responses:
+        '200':
+          description: Sesión autorizada
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [session]
+                properties: { session: { $ref: '#/components/schemas/Session' } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/tracking-sessions/{tracking_id}/disable:
+    parameters: [{ $ref: '#/components/parameters/TrackingID' }]
+    patch:
+      tags: [control-condicional]
+      summary: Finalizar seguimiento técnico (alias de finish)
+      x-operational-status: conditional-gateway-credential
+      description: >-
+        Alias de `POST /api/v1/tracking-sessions/{tracking_id}/finish` para el
+        contrato del API Gateway. Sin cuerpo. Idempotente; revoca la credencial
+        y conserva el historial sujeto a TTL.
+      security: [{ serviceBearer: [] }]
+      x-required-capability: tracking:finish
+      responses:
+        '200':
+          description: Estado finalizado
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [session]
+                properties: { session: { $ref: '#/components/schemas/Session' } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Unavailable' }
   /api/v1/tracking-sessions/{tracking_id}/observations:
     parameters: [{ $ref: '#/components/parameters/TrackingID' }]
     post:

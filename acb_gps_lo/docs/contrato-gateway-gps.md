@@ -23,6 +23,8 @@ GPS consulta geometría únicamente por la ruta configurada del Gateway y no sig
 | Historial | `GET /api/v1/tracking-sessions/{tracking_id}/positions?after_sequence=N&limit=L` | Interna Gateway | Ninguna | 200 |
 | Enviar GPS | `POST /api/v1/tracking-sessions/{tracking_id}/observations` | Bearer de observación exclusivo de esa sesión | `Content-Type: application/json` | 201 nueva, 200 repetida |
 
+**Alias para el contrato del API Gateway:** además de las rutas canónicas, GPS registra `GET /api/v1/tracking-sessions/{tracking_id}/control` (equivalente a `GET /{tracking_id}`) y `PATCH /api/v1/tracking-sessions/{tracking_id}/disable` (equivalente a `POST /{tracking_id}/finish`). Comparten handler, credencial interna, capacidades y respuestas; existen para que `gpsRepository` del Gateway no dependa de rutas específicas del prototipo. Las rutas canónicas se conservan.
+
 El Gateway debe preservar método, ruta interna, cuerpo, `Authorization`, `Idempotency-Key`, códigos, `Retry-After`, `WWW-Authenticate` y `Cache-Control: no-store`. En particular, no debe registrar la credencial devuelta en la creación ni las ubicaciones. Liveness y readiness son interfaces técnicas del despliegue y no autorizan operaciones administrativas.
 
 ### 1. Crear sesión

@@ -25,6 +25,9 @@ services:
     environment:
       MONGO_URI: mongodb://acb_mongo_db:27017/?tls=true&tlsCAFile=/run/acb-tls/ca.crt
       MONGO_DATABASE: geolocaacb
+      # Local test values; agree the real radius/accuracy with operations.
+      ACB_FIRST_PE_RADIUS_M: ${ACB_FIRST_PE_RADIUS_M:-50}
+      ACB_FIRST_PE_MAX_ACCURACY_M: ${ACB_FIRST_PE_MAX_ACCURACY_M:-50}
     command:
       - uvicorn
       - acb_path_lo.main:app

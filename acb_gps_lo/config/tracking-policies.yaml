@@ -16,3 +16,18 @@ policies:
       recovery_observations: 2
       recovery_dwell: 1s
       max_sample_gap: 5s
+  # Local development policy. Values must be agreed before real operation.
+  - policy_id: acb-local-v1
+    revision: 1
+    geographic:
+      corridor_radius_meters: 80
+      point_radius_meters: 50
+      max_accuracy_meters: 50
+    transitions:
+      arrival_observations: 2
+      arrival_dwell: 1s
+      deviation_observations: 2
+      deviation_dwell: 1s
+      recovery_observations: 2
+      recovery_dwell: 1s
+      max_sample_gap: 10s

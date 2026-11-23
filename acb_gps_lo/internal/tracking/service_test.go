@@ -140,6 +140,33 @@ func syntheticRoute() routes.Route {
 	}
 }
 
+func syntheticReturnRoute() routes.Route {
+	route := syntheticRoute()
+	code, school := "542", "SCHOOL"
+	route.Code = &code
+	route.Endpoints.Start.PointID = &school
+	route.Endpoints.FirstPointID = &school
+	// pathshttp marks a first point that is not in meeting_points.
+	route.Unavailable = []string{"first_point_membership"}
+	return route
+}
+
+func TestReturnRoute542IsOperationalReady(t *testing.T) {
+	policy := GeographicPolicy{CorridorRadiusMeters: 30, PointRadiusMeters: 20, MaxAccuracyMeters: 25}
+	route := syntheticReturnRoute()
+	snapshot, err := BuildSnapshot(route, policy)
+	if err != nil || snapshot.OperationalReady() != nil {
+		t.Fatalf("542 snapshot: %v %v", err, snapshot.OperationalReady())
+	}
+
+	route = syntheticReturnRoute()
+	first := route.MeetingPoints[0].ID
+	route.Endpoints.End.PointID = &first
+	if _, err := BuildSnapshot(route, policy); !errors.Is(err, ErrRouteIneligible) {
+		t.Fatalf("542 must end at the last meeting point: %v", err)
+	}
+}
+
 func TestGeographicSnapshotAndReceipt(t *testing.T) {
 	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
 	policy := GeographicPolicy{CorridorRadiusMeters: 30, PointRadiusMeters: 20, MaxAccuracyMeters: 25} // test-only
@@ -264,14 +291,24 @@ func TestCurrentPythonContractCanProvisionGeographicSession(t *testing.T) {
 func TestCorridorOnlyAndSchoolOriginRemainUsable(t *testing.T) {
 	policy := GeographicPolicy{CorridorRadiusMeters: 30, PointRadiusMeters: 20, MaxAccuracyMeters: 25}
 	for _, tc := range []struct {
-		name string
-		route routes.Route
+		name   string
+		route  routes.Route
 		points int
 	}{
 		{name: "corridor only", route: func() routes.Route {
 			r := syntheticRoute()
 			r.MeetingPoints = nil
 			r.Unavailable = []string{"meeting_point_association_provenance", "endpoint_status"}
+			return r
+		}(), points: 0},
+		{name: "542 corridor only without endpoint metadata", route: func() routes.Route {
+			r := syntheticRoute()
+			code := "542"
+			r.Code = &code
+			r.MeetingPoints = nil
+			r.Endpoints = routes.Endpoints{}
+			r.GeometryVersion = nil
+			r.AssociationStatus = nil
 			return r
 		}(), points: 0},
 		{name: "541 school destination", route: func() routes.Route {
